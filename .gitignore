@@ -1,0 +1,31 @@
+# Gradle
+.gradle/
+build/
+**/build/
+
+# Android Studio
+.idea/
+*.iml
+*.iws
+*.ipr
+local.properties
+
+# Keystore / signing
+*.jks
+*.keystore
+keystore.properties
+
+# Generated / compiled
+*.class
+*.dex
+*.apk
+*.aab
+*.aar
+*.ap_
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

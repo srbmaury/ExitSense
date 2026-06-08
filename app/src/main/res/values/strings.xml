@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Smart Exit Reminder</string>
+    <string name="channel_exit_reminder_name">Exit Reminders</string>
+    <string name="channel_exit_reminder_description">Notifications when you are about to leave home</string>
+    <string name="channel_monitoring_name">Monitoring Service</string>
+    <string name="channel_monitoring_description">Background service for detecting exit events</string>
+    <string name="notification_exit_title">Did you take everything?</string>
+    <string name="notification_exit_action_confirm">I\'m ready</string>
+    <string name="notification_exit_action_snooze">Remind me again</string>
+    <string name="service_notification_title">Smart Exit Reminder</string>
+    <string name="service_notification_text">Monitoring for exit signals…</string>
+</resources>
