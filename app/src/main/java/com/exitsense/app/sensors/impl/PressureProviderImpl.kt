@@ -8,6 +8,7 @@ import android.hardware.SensorManager
 import com.exitsense.app.sensors.PressureData
 import com.exitsense.app.sensors.PressureProvider
 import dagger.hilt.android.qualifiers.ApplicationContext
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
@@ -36,19 +37,25 @@ class PressureProviderImpl @Inject constructor(
     private val recentPressures = ArrayDeque<Float>()
     private val smoothingWindow = 4   // fewer readings → faster response
 
-    @Volatile private var isRunning = false
+    // Require several stable readings before accepting the auto-calibrated baseline so that a
+    // reading captured mid-motion doesn't lock in the wrong floor altitude permanently.
+    private var calibrationCount = 0
+    private val calibrationMinReadings = 3
+
+    private val refCount = AtomicInteger(0)
 
     override fun startMonitoring() {
-        if (isRunning || pressureSensor == null) return
-        isRunning = true
+        if (pressureSensor == null) return
+        if (refCount.getAndIncrement() > 0) return
         sensorManager.registerListener(this, pressureSensor, SensorManager.SENSOR_DELAY_NORMAL)
     }
 
     override fun stopMonitoring() {
-        if (!isRunning) return
-        isRunning = false
+        if (pressureSensor == null) return
+        if (refCount.decrementAndGet() > 0) return
         sensorManager.unregisterListener(this)
         recentPressures.clear()
+        calibrationCount = 0
     }
 
     override fun calibrateBaseline() {
@@ -67,9 +74,14 @@ class PressureProviderImpl @Inject constructor(
         val smoothed = recentPressures.average().toFloat()
         val baseline = _pressureData.value.baselinePressure
 
-        // Auto-calibrate on the first reading so baseline is never null
+        // Accumulate a few readings before committing the auto-calibrated baseline so that a
+        // value captured mid-motion (e.g. device being carried upstairs) is not locked in.
         if (baseline == null) {
-            _pressureData.update { it.copy(baselinePressure = smoothed, currentPressure = smoothed, isAvailable = true) }
+            calibrationCount++
+            _pressureData.update { it.copy(currentPressure = smoothed, isAvailable = true) }
+            if (calibrationCount >= calibrationMinReadings) {
+                _pressureData.update { it.copy(baselinePressure = smoothed) }
+            }
             return
         }
 

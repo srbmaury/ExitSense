@@ -16,6 +16,7 @@ interface ExitDetector {
     suspend fun evaluate(
         activeProfiles: List<ReminderProfile>,
         homeWifiSsid: String,
+        homeNetworkIds: Set<Int> = emptySet(),
         threshold: Float
     ): ExitDetectionResult
 }

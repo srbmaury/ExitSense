@@ -19,4 +19,8 @@ data class ReminderProfile(
 
     val endTimeFormatted: String
         get() = "%02d:%02d".format(endTimeHour, endTimeMinute)
+
+    /** Enabled items sorted by effective priority — used for notification display. */
+    fun notifiableItems(): List<ReminderItem> =
+        items.filter { it.isEnabled }.sortedByDescending { it.effectivePriority }
 }

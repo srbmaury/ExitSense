@@ -5,6 +5,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.PowerManager
+import androidx.core.content.ContextCompat
+import java.util.concurrent.atomic.AtomicInteger
 import com.exitsense.app.domain.model.ScreenState
 import com.exitsense.app.sensors.ScreenStateProvider
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -27,9 +29,9 @@ class ScreenStateProviderImpl @Inject constructor(
     private val _recentlyUnlocked = MutableStateFlow(false)
     override val recentlyUnlocked: StateFlow<Boolean> = _recentlyUnlocked
 
-    private var unlockTimestamp = 0L
+    @Volatile private var unlockTimestamp = 0L
+    private val refCount = AtomicInteger(0)
 
-    // 3-minute window where an unlock counts as a "recent" signal
     private val recentUnlockWindowMs = 3 * 60 * 1000L
 
     private val receiver = object : BroadcastReceiver() {
@@ -50,15 +52,17 @@ class ScreenStateProviderImpl @Inject constructor(
     }
 
     override fun startMonitoring() {
+        if (refCount.getAndIncrement() > 0) return
         val filter = IntentFilter().apply {
             addAction(Intent.ACTION_SCREEN_ON)
             addAction(Intent.ACTION_SCREEN_OFF)
             addAction(Intent.ACTION_USER_PRESENT)
         }
-        context.registerReceiver(receiver, filter)
+        ContextCompat.registerReceiver(context, receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
     }
 
     override fun stopMonitoring() {
+        if (refCount.decrementAndGet() > 0) return
         runCatching { context.unregisterReceiver(receiver) }
         _recentlyUnlocked.value = false
     }

@@ -1,7 +1,9 @@
 package com.exitsense.app.data.repository
 
+import androidx.room.withTransaction
 import com.exitsense.app.data.local.dao.ReminderItemDao
 import com.exitsense.app.data.local.dao.ReminderProfileDao
+import com.exitsense.app.data.local.database.AppDatabase
 import com.exitsense.app.data.local.mapper.*
 import com.exitsense.app.domain.model.ReminderItem
 import com.exitsense.app.domain.model.ReminderProfile
@@ -13,12 +15,18 @@ import javax.inject.Singleton
 
 @Singleton
 class ReminderRepositoryImpl @Inject constructor(
+    private val database: AppDatabase,
     private val profileDao: ReminderProfileDao,
     private val itemDao: ReminderItemDao
 ) : ReminderRepository {
 
     override fun getAllProfiles(): Flow<List<ReminderProfile>> =
-        profileDao.getAllProfiles().map { list -> list.map { it.toDomain() } }
+        profileDao.getAllProfiles().map { list ->
+            list.map { entity ->
+                val items = itemDao.getItemsByProfileSync(entity.id).map { it.toDomain() }
+                entity.toDomain(items)
+            }
+        }
 
     override fun getActiveProfiles(): Flow<List<ReminderProfile>> =
         profileDao.getActiveProfiles().map { list ->
@@ -42,7 +50,12 @@ class ReminderRepositoryImpl @Inject constructor(
     }
 
     override suspend fun updateProfile(profile: ReminderProfile) {
-        profileDao.updateProfile(profile.toEntity())
+        database.withTransaction {
+            profileDao.updateProfile(profile.toEntity())
+            itemDao.deleteItemsForProfile(profile.id)
+            val items = profile.items.map { it.copy(profileId = profile.id).toEntity() }
+            if (items.isNotEmpty()) itemDao.insertItems(items)
+        }
     }
 
     override suspend fun deleteProfile(profileId: Long) {

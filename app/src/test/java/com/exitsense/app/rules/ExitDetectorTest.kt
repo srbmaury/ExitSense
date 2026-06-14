@@ -121,6 +121,40 @@ class ExitDetectorTest {
     }
 
     @Test
+    fun `comma separated wifi names trim spaces and preserve underscores and digits`() = runTest {
+        every { wifiProvider.wifiState } returns MutableStateFlow(
+            WifiState(isConnected = true, ssid = "Airtel_Saur_2345")
+        )
+        every { motionProvider.currentMotion } returns MutableStateFlow(MotionType.RUNNING)
+
+        val result = detector.evaluate(
+            activeProfiles = listOf(testProfile),
+            homeWifiSsid = "OfficeNet, Airtel_Saur_2345, Backup5G",
+            threshold = 70f
+        )
+
+        assertFalse(result.isExitDetected)
+        assertEquals(0f, result.confidenceScore, 0.0f)
+        assertTrue(result.signals.any { it.type == ExitSignalType.WIFI_CONNECTED_HOME })
+    }
+
+    @Test
+    fun `comma separated wifi names also work without spaces`() = runTest {
+        every { wifiProvider.wifiState } returns MutableStateFlow(
+            WifiState(isConnected = true, ssid = "B")
+        )
+
+        val result = detector.evaluate(
+            activeProfiles = listOf(testProfile),
+            homeWifiSsid = "A,B,C",
+            threshold = 70f
+        )
+
+        assertFalse(result.isExitDetected)
+        assertEquals(0f, result.confidenceScore, 0.0f)
+    }
+
+    @Test
     fun `barometer descent adds 20 points`() = runTest {
         every { pressureProvider.pressureData } returns MutableStateFlow(
             PressureData(isAvailable = true, isDescending = true)
@@ -178,5 +212,79 @@ class ExitDetectorTest {
 
         assertTrue(result.signals.any { it.type == ExitSignalType.MOTION_DRIVING })
         assertTrue(result.confidenceScore >= defaultWeights.motionDriving)
+    }
+
+    // ── networkId-based Wi-Fi detection ───────────────────────────────────────
+
+    @Test
+    fun `matching networkId suppresses exit even when SSID is null`() = runTest {
+        every { wifiProvider.wifiState } returns MutableStateFlow(
+            WifiState(isConnected = true, ssid = null, networkId = 42)
+        )
+
+        val result = detector.evaluate(
+            activeProfiles = listOf(testProfile),
+            homeWifiSsid = "",
+            homeNetworkIds = setOf(42),
+            threshold = 70f
+        )
+
+        assertFalse(result.isExitDetected)
+        assertEquals(0f, result.confidenceScore, 0.0f)
+        assertTrue(result.signals.any { it.type == ExitSignalType.WIFI_CONNECTED_HOME })
+    }
+
+    @Test
+    fun `networkId not in saved set fires wifi disconnected signal`() = runTest {
+        every { wifiProvider.wifiState } returns MutableStateFlow(
+            WifiState(isConnected = true, ssid = null, networkId = 99)
+        )
+
+        // wifi(50) + timeWindow(5) = 55
+        val result = detector.evaluate(
+            activeProfiles = listOf(testProfile),
+            homeWifiSsid = "",
+            homeNetworkIds = setOf(42),
+            threshold = 70f
+        )
+
+        assertTrue(result.signals.any { it.type == ExitSignalType.WIFI_DISCONNECTED })
+        assertEquals(55f, result.confidenceScore, 0.1f)
+        assertFalse(result.isExitDetected)
+    }
+
+    @Test
+    fun `any networkId in multi-set suppresses exit`() = runTest {
+        every { wifiProvider.wifiState } returns MutableStateFlow(
+            WifiState(isConnected = true, ssid = null, networkId = 7)
+        )
+
+        val result = detector.evaluate(
+            activeProfiles = listOf(testProfile),
+            homeWifiSsid = "",
+            homeNetworkIds = setOf(3, 7, 42),  // 7 is in the set
+            threshold = 70f
+        )
+
+        assertFalse(result.isExitDetected)
+        assertEquals(0f, result.confidenceScore, 0.0f)
+    }
+
+    @Test
+    fun `empty networkId set falls back to SSID matching`() = runTest {
+        every { wifiProvider.wifiState } returns MutableStateFlow(
+            WifiState(isConnected = true, ssid = "HomeWifi", networkId = 7)
+        )
+
+        // homeNetworkIds empty → use SSID path → SSID matches → at home → score 0
+        val result = detector.evaluate(
+            activeProfiles = listOf(testProfile),
+            homeWifiSsid = "HomeWifi",
+            homeNetworkIds = emptySet(),
+            threshold = 70f
+        )
+
+        assertFalse(result.isExitDetected)
+        assertEquals(0f, result.confidenceScore, 0.0f)
     }
 }

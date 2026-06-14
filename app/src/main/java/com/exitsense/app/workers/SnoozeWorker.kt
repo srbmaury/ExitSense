@@ -33,15 +33,14 @@ class SnoozeWorker @AssistedInject constructor(
         val profileId = inputData.getLong(KEY_PROFILE_ID, -1L)
         if (exitEventId == -1L || profileId == -1L) return Result.failure()
 
-        val profile = reminderRepository.getProfileById(profileId) ?: return Result.failure()
+        val profile = reminderRepository.getProfileById(profileId) ?: return Result.success()
         val prefs = preferencesDataStore.userPreferences.first()
 
         notificationManager.showExitReminder(
             exitEventId = exitEventId,
             profileId = profileId,
             profileName = profile.name,
-            items = profile.items.filter { it.isEnabled }
-                .sortedByDescending { it.effectivePriority },
+            items = profile.notifiableItems(),
             snoozeMinutes = prefs.reminderSnoozeMinutes
         )
         return Result.success()

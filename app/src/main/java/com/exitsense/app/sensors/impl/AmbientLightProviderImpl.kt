@@ -8,6 +8,7 @@ import android.hardware.SensorManager
 import com.exitsense.app.sensors.AmbientLightProvider
 import com.exitsense.app.sensors.LightData
 import dagger.hilt.android.qualifiers.ApplicationContext
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
@@ -31,17 +32,17 @@ class AmbientLightProviderImpl @Inject constructor(
     private val recentReadings = ArrayDeque<Float>()
     private val smoothingWindow = 5
 
-    @Volatile private var isRunning = false
+    private val refCount = AtomicInteger(0)
 
     override fun startMonitoring() {
-        if (isRunning || lightSensor == null) return
-        isRunning = true
+        if (lightSensor == null) return
+        if (refCount.getAndIncrement() > 0) return
         sensorManager.registerListener(this, lightSensor, SensorManager.SENSOR_DELAY_NORMAL)
     }
 
     override fun stopMonitoring() {
-        if (!isRunning) return
-        isRunning = false
+        if (lightSensor == null) return
+        if (refCount.decrementAndGet() > 0) return
         sensorManager.unregisterListener(this)
         recentReadings.clear()
     }

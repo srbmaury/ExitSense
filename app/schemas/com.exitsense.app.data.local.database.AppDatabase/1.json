@@ -1,8 +1,8 @@
 {
   "formatVersion": 1,
   "database": {
-    "version": 3,
-    "identityHash": "d8888e3843d20ed99d4352b34a5c42d4",
+    "version": 1,
+    "identityHash": "afe4a7a81b3efed0e648289525d89f2a",
     "entities": [
       {
         "tableName": "reminder_profiles",
@@ -162,7 +162,7 @@
       },
       {
         "tableName": "exit_events",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `timestamp` INTEGER NOT NULL, `confidenceScore` REAL NOT NULL, `triggeredSignals` TEXT NOT NULL, `notificationShown` INTEGER NOT NULL, `profileId` INTEGER, `userResponded` INTEGER NOT NULL)",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `timestamp` INTEGER NOT NULL, `confidenceScore` REAL NOT NULL, `triggeredSignals` TEXT NOT NULL, `notificationShown` INTEGER NOT NULL, `profileId` INTEGER, `userResponded` INTEGER NOT NULL, FOREIGN KEY(`profileId`) REFERENCES `reminder_profiles`(`id`) ON UPDATE NO ACTION ON DELETE SET NULL )",
         "fields": [
           {
             "fieldPath": "id",
@@ -211,7 +211,31 @@
           "columnNames": [
             "id"
           ]
-        }
+        },
+        "indices": [
+          {
+            "name": "index_exit_events_profileId",
+            "unique": false,
+            "columnNames": [
+              "profileId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_exit_events_profileId` ON `${TABLE_NAME}` (`profileId`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "reminder_profiles",
+            "onDelete": "SET NULL",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "profileId"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          }
+        ]
       },
       {
         "tableName": "user_responses",
@@ -351,7 +375,7 @@
     ],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'd8888e3843d20ed99d4352b34a5c42d4')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'afe4a7a81b3efed0e648289525d89f2a')"
     ]
   }
 }

@@ -4,8 +4,8 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.os.BatteryManager
 import androidx.core.content.ContextCompat
+import java.util.concurrent.atomic.AtomicInteger
 import com.exitsense.app.sensors.ChargerData
 import com.exitsense.app.sensors.ChargerStateProvider
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -23,7 +23,7 @@ class ChargerStateProviderImpl @Inject constructor(
     private val _chargerData = MutableStateFlow(ChargerData())
     override val chargerData: StateFlow<ChargerData> = _chargerData
 
-    @Volatile private var isRunning = false
+    private val refCount = AtomicInteger(0)
 
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(ctx: Context, intent: Intent) {
@@ -37,34 +37,16 @@ class ChargerStateProviderImpl @Inject constructor(
     }
 
     override fun startMonitoring() {
-        if (isRunning) return
-        isRunning = true
-
-        // Seed with current charging state so first evaluation is accurate
-        val batteryStatus = ContextCompat.registerReceiver(
-            context, null,
-            IntentFilter(Intent.ACTION_BATTERY_CHANGED),
-            ContextCompat.RECEIVER_EXPORTED
-        )
-        val isCharging = batteryStatus?.let {
-            val status = it.getIntExtra(BatteryManager.EXTRA_STATUS, -1)
-            status == BatteryManager.BATTERY_STATUS_CHARGING ||
-                status == BatteryManager.BATTERY_STATUS_FULL
-        } ?: true
-        if (!isCharging) {
-            _chargerData.update { it.copy(lastUnpluggedAt = System.currentTimeMillis()) }
-        }
-
+        if (refCount.getAndIncrement() > 0) return
         val filter = IntentFilter().apply {
             addAction(Intent.ACTION_POWER_CONNECTED)
             addAction(Intent.ACTION_POWER_DISCONNECTED)
         }
-        ContextCompat.registerReceiver(context, receiver, filter, ContextCompat.RECEIVER_EXPORTED)
+        ContextCompat.registerReceiver(context, receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
     }
 
     override fun stopMonitoring() {
-        if (!isRunning) return
-        isRunning = false
+        if (refCount.decrementAndGet() > 0) return
         try { context.unregisterReceiver(receiver) } catch (_: IllegalArgumentException) {}
     }
 }

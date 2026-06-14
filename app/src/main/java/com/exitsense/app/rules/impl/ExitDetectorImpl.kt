@@ -24,12 +24,13 @@ class ExitDetectorImpl @Inject constructor(
     private val stepCountProvider: StepCountProvider,
     private val chargerStateProvider: ChargerStateProvider,
     private val ambientLightProvider: AmbientLightProvider,
-    private val weights: SignalWeight = SignalWeight()
+    private val weights: SignalWeight
 ) : ExitDetector {
 
     override suspend fun evaluate(
         activeProfiles: List<ReminderProfile>,
         homeWifiSsid: String,
+        homeNetworkIds: Set<Int>,
         threshold: Float
     ): ExitDetectionResult {
 
@@ -37,8 +38,15 @@ class ExitDetectorImpl @Inject constructor(
         (screenStateProvider as? ScreenStateProviderImpl)?.refreshUnlockFreshness()
 
         val wifi = wifiProvider.wifiState.value
-        val onHomeWifi = wifi.isConnected && homeWifiSsid.isNotBlank() &&
-            homeWifiSsid.equals(wifi.ssid, ignoreCase = true)
+        val homeWifiSsids = parseHomeWifiSsids(homeWifiSsid)
+
+        // networkIds are available without location permission in NetworkCallback context.
+        // SSID requires ACCESS_FINE_LOCATION + location services on API 29+, so use it only
+        // as a fallback when no networkIds have been saved yet.
+        val onHomeWifi = wifi.isConnected && (
+            (homeNetworkIds.isNotEmpty() && wifi.networkId != -1 && wifi.networkId in homeNetworkIds) ||
+            (homeNetworkIds.isEmpty() && matchesHomeWifiSsid(homeWifiSsid, wifi.ssid))
+        )
 
         // Short-circuit: still on home Wi-Fi → definitely at home, skip all other checks
         if (onHomeWifi) {
@@ -56,8 +64,11 @@ class ExitDetectorImpl @Inject constructor(
         // ── Wi-Fi signal ────────────────────────────────────────────────────
         // Fire when: explicitly disconnected, on cellular (not connected at all),
         // OR connected to a *different* known network (SSID readable and not home).
-        val onDifferentKnownWifi = wifi.isConnected && wifi.ssid != null &&
-            homeWifiSsid.isNotBlank() && !homeWifiSsid.equals(wifi.ssid, ignoreCase = true)
+        val onDifferentKnownWifi = wifi.isConnected && (
+            (homeNetworkIds.isNotEmpty() && wifi.networkId != -1 && wifi.networkId !in homeNetworkIds) ||
+            (homeNetworkIds.isEmpty() && wifi.ssid != null && homeWifiSsids.isNotEmpty() &&
+                !matchesHomeWifiSsid(homeWifiSsid, wifi.ssid))
+        )
         if (wifi.justDisconnected ||
             (!wifi.isConnected && homeWifiSsid.isNotBlank()) ||
             onDifferentKnownWifi
@@ -121,11 +132,13 @@ class ExitDetectorImpl @Inject constructor(
             signals += ExitSignal(ExitSignalType.CHARGER_UNPLUGGED, s, "Unplugged recently")
         }
 
-        // ── Ambient light signal (display only, weight = 0) ─────────────────
+        // ── Ambient light signal ────────────────────────────────────────────
         val light = ambientLightProvider.lightData.value
         if (light.isAvailable && light.isOutdoor) {
+            val s = weights.ambientLight
+            score += s
             signals += ExitSignal(
-                ExitSignalType.AMBIENT_LIGHT, 0f,
+                ExitSignalType.AMBIENT_LIGHT, s,
                 "%.0f lux (outdoor)".format(light.luxLevel ?: 0f)
             )
         }

@@ -10,9 +10,9 @@ import com.exitsense.app.domain.repository.ExitEventRepository
 import com.exitsense.app.domain.repository.ReminderRepository
 import com.exitsense.app.domain.usecase.GetActiveProfilesUseCase
 import com.exitsense.app.notifications.ExitNotificationManager
+import com.exitsense.app.rules.DEFAULT_EXIT_THRESHOLD
 import com.exitsense.app.rules.ExitDetectionResult
 import com.exitsense.app.rules.ExitDetector
-import com.exitsense.app.rules.TimeRuleEvaluator
 import com.exitsense.app.sensors.AmbientLightProvider
 import com.exitsense.app.sensors.ChargerStateProvider
 import com.exitsense.app.sensors.MotionProvider
@@ -40,11 +40,13 @@ data class HomeUiState(
     val currentMotion: MotionType = MotionType.STILL,
     val wifiConnected: Boolean = false,
     val wifiSsid: String? = null,
-    val confidenceThreshold: Float = 70f,
+    val wifiNetworkId: Int = -1,
+    val homeWifiSsid: String = "",
+    val homeNetworkIds: Set<Int> = emptySet(),
+    val confidenceThreshold: Float = DEFAULT_EXIT_THRESHOLD,
     val pressureData: PressureData = PressureData()
 )
 
-private const val NOTIFICATION_COOLDOWN_MS = 24 * 60 * 60 * 1000L // 1 per day
 
 @HiltViewModel
 class HomeViewModel @Inject constructor(
@@ -69,6 +71,9 @@ class HomeViewModel @Inject constructor(
 
     init {
         notificationManager.createChannels()
+        motionProvider.startMonitoring()
+        wifiProvider.startMonitoring()
+        screenStateProvider.startMonitoring()
         pressureProvider.startMonitoring()
         stepCountProvider.startMonitoring()
         chargerStateProvider.startMonitoring()
@@ -80,6 +85,9 @@ class HomeViewModel @Inject constructor(
     }
 
     override fun onCleared() {
+        motionProvider.stopMonitoring()
+        wifiProvider.stopMonitoring()
+        screenStateProvider.stopMonitoring()
         pressureProvider.stopMonitoring()
         stepCountProvider.stopMonitoring()
         chargerStateProvider.stopMonitoring()
@@ -93,11 +101,25 @@ class HomeViewModel @Inject constructor(
                 _uiState.update {
                     it.copy(
                         isSetupComplete = prefs.isSetupComplete,
+                        isMonitoring = prefs.isMonitoringEnabled,
                         confidenceThreshold = prefs.exitConfidenceThreshold,
+                        homeWifiSsid = prefs.homeWifiSsid,
+                        homeNetworkIds = prefs.homeNetworkIds,
                         isLoading = false
                     )
                 }
             }
+        }
+        // Re-run detection immediately when detection-affecting settings change
+        viewModelScope.launch {
+            preferencesDataStore.userPreferences
+                .drop(1) // skip initial load — runInitialDetection() handles that
+                .distinctUntilChanged { old, new ->
+                    old.homeWifiSsid == new.homeWifiSsid &&
+                    old.homeNetworkIds == new.homeNetworkIds &&
+                    old.exitConfidenceThreshold == new.exitConfidenceThreshold
+                }
+                .collect { detectNow() }
         }
     }
 
@@ -110,7 +132,7 @@ class HomeViewModel @Inject constructor(
         viewModelScope.launch {
             wifiProvider.wifiState.collect { wifi ->
                 _uiState.update {
-                    it.copy(wifiConnected = wifi.isConnected, wifiSsid = wifi.ssid)
+                    it.copy(wifiConnected = wifi.isConnected, wifiSsid = wifi.ssid, wifiNetworkId = wifi.networkId)
                 }
             }
         }
@@ -119,22 +141,24 @@ class HomeViewModel @Inject constructor(
                 _uiState.update { it.copy(pressureData = pressure) }
             }
         }
-        // Re-run detection automatically whenever any sensor value changes.
+        // Re-run detection when a score-affecting property changes.
+        // Wrap high-frequency sensor flows so only the detection-relevant field is observed,
+        // preventing continuous lux/pressure/step readings from resetting the debounce.
         combine(
             combine(
                 motionProvider.currentMotion,
                 wifiProvider.wifiState,
                 screenStateProvider.recentlyUnlocked,
-                pressureProvider.pressureData,
-                stepCountProvider.stepData
+                pressureProvider.pressureData.map { it.isDescending }.distinctUntilChanged(),
+                stepCountProvider.stepData.map { it.stepsLastMinute >= 20 }.distinctUntilChanged()
             ) { _, _, _, _, _ -> Unit },
             combine(
                 chargerStateProvider.chargerData,
-                ambientLightProvider.lightData
+                ambientLightProvider.lightData.map { it.isOutdoor }.distinctUntilChanged()
             ) { _, _ -> Unit }
         ) { _, _ -> Unit }
-            .drop(1)         // skip the initial combined emission
-            .debounce(2_000L)
+            .drop(1)
+            .debounce(500L)
             .onEach { detectNow() }
             .launchIn(viewModelScope)
     }
@@ -167,36 +191,16 @@ class HomeViewModel @Inject constructor(
 
     private suspend fun detectNow() {
         val prefs = preferencesDataStore.userPreferences.first()
-        val profiles = _uiState.value.activeProfiles
+        val profiles = reminderRepository.getActiveProfiles().first()
         val result = exitDetector.evaluate(
             activeProfiles = profiles,
             homeWifiSsid = prefs.homeWifiSsid,
+            homeNetworkIds = prefs.homeNetworkIds,
             threshold = prefs.exitConfidenceThreshold
         )
-        val now = System.currentTimeMillis()
-        _uiState.update { it.copy(detectionResult = result, detectionResultTime = now) }
-
-        if (result.isExitDetected && prefs.notificationsEnabled) {
-            val profile = profiles.firstOrNull {
-                TimeRuleEvaluator.isWithinSchedule(it) &&
-                    now - it.lastNotifiedAt >= NOTIFICATION_COOLDOWN_MS
-            } ?: return
-            val event = ExitEvent(
-                confidenceScore = result.confidenceScore,
-                triggeredSignals = result.signals.map { it.type },
-                notificationShown = true,
-                profileId = profile.id
-            )
-            val eventId = exitEventRepository.saveExitEvent(event)
-            reminderRepository.updateProfileLastNotifiedAt(profile.id, now)
-            notificationManager.showExitReminder(
-                exitEventId = eventId,
-                profileId = profile.id,
-                profileName = profile.name,
-                items = profile.items.filter { it.isEnabled }.sortedByDescending { it.effectivePriority },
-                snoozeMinutes = prefs.reminderSnoozeMinutes
-            )
-        }
+        _uiState.update { it.copy(detectionResult = result, detectionResultTime = System.currentTimeMillis()) }
+        // Notification delivery is owned exclusively by ExitMonitoringService to prevent
+        // duplicate notifications when both the service and the ViewModel evaluate simultaneously.
     }
 
     fun calibratePressureBaseline() {
@@ -207,13 +211,13 @@ class HomeViewModel @Inject constructor(
         val intent = Intent(context, ExitMonitoringService::class.java)
             .setAction(ExitMonitoringService.ACTION_START)
         context.startForegroundService(intent)
-        _uiState.update { it.copy(isMonitoring = true) }
+        viewModelScope.launch { preferencesDataStore.setMonitoringEnabled(true) }
     }
 
     fun stopMonitoringService() {
         val intent = Intent(context, ExitMonitoringService::class.java)
             .setAction(ExitMonitoringService.ACTION_STOP)
         context.startService(intent)
-        _uiState.update { it.copy(isMonitoring = false) }
+        viewModelScope.launch { preferencesDataStore.setMonitoringEnabled(false) }
     }
 }

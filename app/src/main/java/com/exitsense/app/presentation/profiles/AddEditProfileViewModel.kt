@@ -3,6 +3,7 @@ package com.exitsense.app.presentation.profiles
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.exitsense.app.domain.model.*
+import com.exitsense.app.domain.repository.LearningRepository
 import com.exitsense.app.domain.repository.ReminderRepository
 import com.exitsense.app.domain.usecase.SaveProfileUseCase
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -23,6 +24,8 @@ data class AddEditProfileUiState(
     val endTimeMinute: Int = 0,
     val items: List<ReminderItem> = emptyList(),
     val newItemName: String = "",
+    val newItemIconName: String = "check_circle",
+    val itemConfirmationRates: Map<Long, Float> = emptyMap(),
     val error: String? = null,
     val isEditMode: Boolean = false
 )
@@ -30,7 +33,8 @@ data class AddEditProfileUiState(
 @HiltViewModel
 class AddEditProfileViewModel @Inject constructor(
     private val reminderRepository: ReminderRepository,
-    private val saveProfileUseCase: SaveProfileUseCase
+    private val saveProfileUseCase: SaveProfileUseCase,
+    private val learningRepository: LearningRepository
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(AddEditProfileUiState())
@@ -43,6 +47,10 @@ class AddEditProfileViewModel @Inject constructor(
             _uiState.update { it.copy(isLoading = true) }
             val profile = reminderRepository.getProfileById(profileId) ?: return@launch
             editingProfileId = profileId
+            // Load confirmation rates for each item that has learning history
+            val rates = profile.items.associate { item ->
+                item.id to learningRepository.getConfirmationRateForItem(item.id, profileId)
+            }
             _uiState.update {
                 it.copy(
                     isLoading = false,
@@ -54,7 +62,8 @@ class AddEditProfileViewModel @Inject constructor(
                     startTimeMinute = profile.startTimeMinute,
                     endTimeHour = profile.endTimeHour,
                     endTimeMinute = profile.endTimeMinute,
-                    items = profile.items
+                    items = profile.items,
+                    itemConfirmationRates = rates
                 )
             }
         }
@@ -68,6 +77,7 @@ class AddEditProfileViewModel @Inject constructor(
     fun onEndTimeChanged(hour: Int, minute: Int) =
         _uiState.update { it.copy(endTimeHour = hour, endTimeMinute = minute) }
     fun onNewItemNameChanged(name: String) = _uiState.update { it.copy(newItemName = name) }
+    fun onNewItemIconChanged(iconName: String) = _uiState.update { it.copy(newItemIconName = iconName) }
 
     fun addItem() {
         val name = _uiState.value.newItemName.trim()
@@ -75,13 +85,11 @@ class AddEditProfileViewModel @Inject constructor(
         val newItem = ReminderItem(
             profileId = editingProfileId,
             name = name,
+            iconName = _uiState.value.newItemIconName,
             priority = 3
         )
         _uiState.update {
-            it.copy(
-                items = it.items + newItem,
-                newItemName = ""
-            )
+            it.copy(items = it.items + newItem, newItemName = "", newItemIconName = "check_circle")
         }
     }
 
@@ -104,7 +112,6 @@ class AddEditProfileViewModel @Inject constructor(
 
         viewModelScope.launch {
             _uiState.update { it.copy(isSaving = true, error = null) }
-
             val profile = ReminderProfile(
                 id = editingProfileId,
                 name = state.name,
@@ -116,7 +123,6 @@ class AddEditProfileViewModel @Inject constructor(
                 endTimeMinute = state.endTimeMinute,
                 items = state.items
             )
-
             saveProfileUseCase(profile)
                 .onSuccess { _uiState.update { it.copy(isSaving = false, isSaved = true) } }
                 .onFailure { e ->

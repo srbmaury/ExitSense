@@ -27,6 +27,7 @@ import com.exitsense.app.presentation.theme.ConfidenceHigh
 import com.exitsense.app.presentation.theme.ExitSenseTheme
 import com.exitsense.app.rules.ExitDetectionResult
 import com.exitsense.app.rules.ExitSignal
+import com.exitsense.app.rules.matchesHomeWifiSsid
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -36,6 +37,7 @@ fun HomeScreen(
     onNavigateToProfiles: () -> Unit,
     onNavigateToHistory: () -> Unit,
     onNavigateToSettings: () -> Unit,
+    onNavigateToIntegrations: () -> Unit = {},
     viewModel: HomeViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -45,6 +47,9 @@ fun HomeScreen(
             ExitSenseTopBar(
                 title = "Smart Exit Reminder",
                 actions = {
+                    IconButton(onClick = onNavigateToIntegrations) {
+                        Icon(Icons.Default.Extension, "Integrations")
+                    }
                     IconButton(onClick = onNavigateToSettings) {
                         Icon(Icons.Default.Settings, "Settings")
                     }
@@ -86,19 +91,24 @@ fun HomeScreen(
                     motion = state.currentMotion,
                     wifiConnected = state.wifiConnected,
                     wifiSsid = state.wifiSsid,
+                    wifiNetworkId = state.wifiNetworkId,
+                    homeWifiSsid = state.homeWifiSsid,
+                    homeNetworkIds = state.homeNetworkIds,
                     pressureData = state.pressureData,
                     onCalibrateBaseline = viewModel::calibratePressureBaseline
                 )
             }
 
-            // Detection result card
-            state.detectionResult?.let { result ->
-                item {
-                    DetectionResultCard(
-                        result = result,
-                        threshold = state.confidenceThreshold,
-                        lastCheckedAt = state.detectionResultTime
-                    )
+            // Detection result card — only meaningful when at least one profile exists
+            if (state.activeProfiles.isNotEmpty()) {
+                state.detectionResult?.let { result ->
+                    item {
+                        DetectionResultCard(
+                            result = result,
+                            threshold = state.confidenceThreshold,
+                            lastCheckedAt = state.detectionResultTime
+                        )
+                    }
                 }
             }
 
@@ -218,9 +228,22 @@ private fun SensorStatusCard(
     motion: MotionType,
     wifiConnected: Boolean,
     wifiSsid: String?,
+    wifiNetworkId: Int = -1,
+    homeWifiSsid: String = "",
+    homeNetworkIds: Set<Int> = emptySet(),
     pressureData: PressureData = PressureData(),
     onCalibrateBaseline: () -> Unit = {}
 ) {
+    val ssidMatch = matchesHomeWifiSsid(homeWifiSsid, wifiSsid)
+    val networkIdMatch = wifiNetworkId != -1 && homeNetworkIds.isNotEmpty() && wifiNetworkId in homeNetworkIds
+    val onHome = wifiConnected && (ssidMatch || networkIdMatch)
+    val wifiLabel = when {
+        !wifiConnected -> "No Wi-Fi"
+        wifiSsid == null -> "Wi-Fi (name unknown)"
+        onHome -> "Home: $wifiSsid"
+        else -> wifiSsid
+    }
+
     Card {
         Column(
             modifier = Modifier
@@ -237,11 +260,18 @@ private fun SensorStatusCard(
                 )
                 SuggestionChip(
                     onClick = {},
-                    label = { Text(if (wifiConnected) (wifiSsid ?: "Wi-Fi") else "No Wi-Fi") },
+                    label = { Text(wifiLabel) },
                     icon = { Icon(
                         if (wifiConnected) Icons.Default.Wifi else Icons.Default.WifiOff,
                         null, Modifier.size(16.dp)
                     )}
+                )
+            }
+            if (wifiConnected && wifiSsid == null && homeWifiSsid.isNotBlank()) {
+                Text(
+                    "Wi-Fi name unreadable — check Location permission in Settings",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
                 )
             }
             if (pressureData.isAvailable) {
@@ -254,15 +284,12 @@ private fun SensorStatusCard(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        val isDescending = pressureData.baselinePressure != null &&
-                            pressureData.currentPressure != null &&
-                            (pressureData.baselinePressure!! - pressureData.currentPressure!!) >= 0.3f
                         SuggestionChip(
                             onClick = {},
                             label = {
                                 Text(
-                                    if (isDescending) "Descending ↓" else "Stable",
-                                    color = if (isDescending) MaterialTheme.colorScheme.error
+                                    if (pressureData.isDescending) "Descending ↓" else "Stable",
+                                    color = if (pressureData.isDescending) MaterialTheme.colorScheme.error
                                             else MaterialTheme.colorScheme.onSurface
                                 )
                             },

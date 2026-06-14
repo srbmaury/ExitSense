@@ -1,6 +1,11 @@
 package com.exitsense.app.presentation.settings
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -22,6 +27,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.exitsense.app.presentation.components.ExitSenseTopBar
 import com.exitsense.app.presentation.components.LoadingScreen
 import com.exitsense.app.presentation.theme.ExitSenseTheme
+import com.exitsense.app.rules.matchesHomeWifiSsid
+import com.exitsense.app.rules.parseHomeWifiSsids
 import kotlin.math.roundToInt
 
 @Composable
@@ -30,6 +37,37 @@ fun SettingsScreen(
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) viewModel.refreshWifiSsid()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    // File picker launchers for backup
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json")
+    ) { uri -> uri?.let { viewModel.exportProfiles(it) } }
+
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri -> uri?.let { viewModel.importProfiles(it) } }
+
+    // Snackbar messages
+    state.exportMessage?.let { msg ->
+        LaunchedEffect(msg) {
+            // dismiss after shown
+            viewModel.clearExportMessage()
+        }
+    }
+    state.importMessage?.let { msg ->
+        LaunchedEffect(msg) {
+            viewModel.clearImportMessage()
+        }
+    }
 
     Scaffold(
         topBar = { ExitSenseTopBar(title = "Settings", onNavigateBack = onNavigateBack) }
@@ -45,22 +83,33 @@ fun SettingsScreen(
             ),
             verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
+            // ── Wi-Fi Detection ──────────────────────────────────────────────
             item { SectionHeader("Wi-Fi Detection") }
             item {
                 WifiSsidSetting(
                     currentSsid = state.preferences.homeWifiSsid,
-                    onSsidChanged = viewModel::updateHomeWifi
+                    currentWifiSsid = state.currentWifiSsid,
+                    currentNetworkId = state.currentNetworkId,
+                    isWifiConnected = state.isWifiConnected,
+                    savedNetworkIds = state.preferences.homeNetworkIds,
+                    onSsidChanged = viewModel::updateHomeWifi,
+                    onAddNetworkId = viewModel::addHomeNetworkId,
+                    onRemoveNetworkId = viewModel::removeHomeNetworkId
                 )
             }
 
-            item { Spacer(Modifier.height(8.dp)); SectionHeader("Floor Detection") }
-            item {
-                FloorSetting(
-                    currentFloor = state.preferences.homeFloor,
-                    onFloorChanged = viewModel::updateHomeFloor
-                )
+            // ── Floor Detection ──────────────────────────────────────────────
+            if (state.hasBarometer) {
+                item { Spacer(Modifier.height(8.dp)); SectionHeader("Floor Detection") }
+                item {
+                    FloorSetting(
+                        currentFloor = state.preferences.homeFloor,
+                        onFloorChanged = viewModel::updateHomeFloor
+                    )
+                }
             }
 
+            // ── Notifications ─────────────────────────────────────────────────
             item { Spacer(Modifier.height(8.dp)); SectionHeader("Notifications") }
             item {
                 ToggleSetting(
@@ -73,7 +122,7 @@ fun SettingsScreen(
             item {
                 SliderSetting(
                     label = "Snooze Duration",
-                    description = "How long to wait before re-showing the reminder after you tap 'Snooze' on the notification",
+                    description = "How long to wait before re-showing the reminder",
                     value = state.preferences.reminderSnoozeMinutes.toFloat(),
                     valueRange = 1f..15f,
                     steps = 13,
@@ -81,7 +130,18 @@ fun SettingsScreen(
                     onValueChange = { viewModel.updateSnoozeMinutes(it.roundToInt()) }
                 )
             }
+            item {
+                QuietHoursSetting(
+                    enabled = state.preferences.quietHoursEnabled,
+                    startMinute = state.preferences.quietHoursStartMinute,
+                    endMinute = state.preferences.quietHoursEndMinute,
+                    onEnabledChanged = viewModel::updateQuietHoursEnabled,
+                    onStartChanged = viewModel::updateQuietHoursStart,
+                    onEndChanged = viewModel::updateQuietHoursEnd
+                )
+            }
 
+            // ── Detection Sensitivity ─────────────────────────────────────────
             item { Spacer(Modifier.height(8.dp)); SectionHeader("Detection Sensitivity") }
             item {
                 SliderSetting(
@@ -95,6 +155,22 @@ fun SettingsScreen(
                 )
             }
 
+            // ── Data / Backup ─────────────────────────────────────────────────
+            item { Spacer(Modifier.height(8.dp)); SectionHeader("Data") }
+            item {
+                BackupSetting(
+                    exportMessage = state.exportMessage,
+                    importMessage = state.importMessage,
+                    onExport = {
+                        val ts = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault())
+                            .format(java.util.Date())
+                        exportLauncher.launch("exitsense_profiles_$ts.json")
+                    },
+                    onImport = { importLauncher.launch(arrayOf("application/json", "text/plain")) }
+                )
+            }
+
+            // ── About ─────────────────────────────────────────────────────────
             item { Spacer(Modifier.height(8.dp)); SectionHeader("About") }
             item {
                 Card(modifier = Modifier.fillMaxWidth()) {
@@ -122,10 +198,27 @@ private fun SectionHeader(title: String) {
     )
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun WifiSsidSetting(currentSsid: String, onSsidChanged: (String) -> Unit) {
+private fun WifiSsidSetting(
+    currentSsid: String,
+    currentWifiSsid: String?,
+    currentNetworkId: Int = -1,
+    isWifiConnected: Boolean,
+    savedNetworkIds: Set<Int> = emptySet(),
+    onSsidChanged: (String) -> Unit,
+    onAddNetworkId: (Int) -> Unit = {},
+    onRemoveNetworkId: (Int) -> Unit = {}
+) {
     var draft by remember(currentSsid) { mutableStateOf(currentSsid) }
     val focusManager = LocalFocusManager.current
+    val matches = matchesHomeWifiSsid(currentSsid, currentWifiSsid)
+
+    fun withSavedSsid(ssid: String): String {
+        val saved = parseHomeWifiSsids(currentSsid)
+        if (saved.any { it.equals(ssid, ignoreCase = true) }) return currentSsid
+        return (saved + ssid.trim()).joinToString(", ")
+    }
 
     Card {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -137,17 +230,72 @@ private fun WifiSsidSetting(currentSsid: String, onSsidChanged: (String) -> Unit
                     tint = MaterialTheme.colorScheme.primary)
                 Text("Home Wi-Fi Network", style = MaterialTheme.typography.bodyLarge)
             }
+
+            when {
+                currentWifiSsid != null -> {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "Now connected: $currentWifiSsid",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (matches) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        if (!matches) {
+                            TextButton(onClick = {
+                                val updated = withSavedSsid(currentWifiSsid)
+                                draft = updated
+                                onSsidChanged(updated)
+                                if (currentNetworkId != -1) onAddNetworkId(currentNetworkId)
+                            }) { Text("Use This") }
+                        } else {
+                            Icon(Icons.Default.CheckCircle, null, Modifier.size(16.dp),
+                                tint = MaterialTheme.colorScheme.primary)
+                        }
+                    }
+                }
+                isWifiConnected && currentNetworkId != -1 -> {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "Connected · network detected",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.weight(1f)
+                        )
+                        TextButton(onClick = { onAddNetworkId(currentNetworkId) }) {
+                            Text("Use This")
+                        }
+                    }
+                }
+                isWifiConnected -> {
+                    Text("Connected · detecting network…",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                else -> {
+                    Text("Not connected to Wi-Fi",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+
             OutlinedTextField(
                 value = draft,
                 onValueChange = { draft = it },
-                label = { Text("Network name (SSID)") },
+                label = { Text("Saved home network name (SSID)") },
                 placeholder = { Text("e.g. MyHomeWifi") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                 keyboardActions = KeyboardActions(onDone = {
-                    onSsidChanged(draft)
-                    focusManager.clearFocus()
+                    onSsidChanged(draft); focusManager.clearFocus()
                 }),
                 trailingIcon = {
                     if (draft != currentSsid) {
@@ -157,8 +305,37 @@ private fun WifiSsidSetting(currentSsid: String, onSsidChanged: (String) -> Unit
                     }
                 }
             )
+
+            // Saved network ID chips
+            if (savedNetworkIds.isNotEmpty()) {
+                Text("Trusted networks (no location permission needed):",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    savedNetworkIds.sorted().forEachIndexed { i, id ->
+                        val isCurrentlyConnected = id == currentNetworkId
+                        InputChip(
+                            selected = isCurrentlyConnected,
+                            onClick = {},
+                            label = { Text("Network ${i + 1}${if (isCurrentlyConnected) " (now)" else ""}") },
+                            trailingIcon = {
+                                IconButton(
+                                    onClick = { onRemoveNetworkId(id) },
+                                    modifier = Modifier.size(18.dp)
+                                ) {
+                                    Icon(Icons.Default.Close, "Remove", Modifier.size(14.dp))
+                                }
+                            }
+                        )
+                    }
+                }
+            }
+
             Text(
-                "Used to detect when you leave home. No location permission required.",
+                "Connect to your home Wi-Fi and tap 'Use This' to save it. Multiple networks are supported for mesh routers.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -175,30 +352,19 @@ private fun FloorSetting(currentFloor: Int, onFloorChanged: (Int) -> Unit) {
 
     Card {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
+            Row(verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Icon(Icons.Default.Apartment, null, Modifier.size(20.dp),
                     tint = MaterialTheme.colorScheme.primary)
                 Text("Home Floor", style = MaterialTheme.typography.bodyLarge)
             }
-            FlowRow(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
+            FlowRow(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 quickFloors.forEach { (floor, label) ->
                     FilterChip(
                         modifier = Modifier.weight(1f),
                         selected = floor == currentFloor && draft.isEmpty(),
                         onClick = { draft = ""; onFloorChanged(floor) },
-                        label = {
-                            Text(
-                                label,
-                                textAlign = TextAlign.Center,
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                        }
+                        label = { Text(label, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth()) }
                     )
                 }
             }
@@ -212,24 +378,164 @@ private fun FloorSetting(currentFloor: Int, onFloorChanged: (Int) -> Unit) {
                 },
                 label = { Text("Or enter any floor") },
                 placeholder = { Text("5, 10, 15…") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(
-                    keyboardType = KeyboardType.Number,
-                    imeAction = ImeAction.Done
-                ),
+                modifier = Modifier.fillMaxWidth(), singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
                 keyboardActions = KeyboardActions(onDone = {
-                    if (draft.isEmpty()) onFloorChanged(currentFloor)
-                    focusManager.clearFocus()
+                    if (draft.isEmpty()) onFloorChanged(currentFloor); focusManager.clearFocus()
                 }),
                 supportingText = {
                     val effective = draft.toIntOrNull() ?: currentFloor
-                    Text(
-                        if (effective == 0) "Ground floor — barometer not applicable"
-                        else "Floor $effective — barometer descent detection enabled"
-                    )
+                    Text(if (effective == 0) "Ground floor — barometer not applicable"
+                         else "Floor $effective — barometer descent detection enabled")
                 }
             )
+        }
+    }
+}
+
+@Composable
+private fun QuietHoursSetting(
+    enabled: Boolean,
+    startMinute: Int,
+    endMinute: Int,
+    onEnabledChanged: (Boolean) -> Unit,
+    onStartChanged: (Int) -> Unit,
+    onEndChanged: (Int) -> Unit
+) {
+    var showStartPicker by remember { mutableStateOf(false) }
+    var showEndPicker by remember { mutableStateOf(false) }
+
+    if (showStartPicker) {
+        QuietTimePickerDialog(
+            initialHour = startMinute / 60,
+            initialMinute = startMinute % 60,
+            onConfirm = { h, m -> onStartChanged(h * 60 + m); showStartPicker = false },
+            onDismiss = { showStartPicker = false }
+        )
+    }
+    if (showEndPicker) {
+        QuietTimePickerDialog(
+            initialHour = endMinute / 60,
+            initialMinute = endMinute % 60,
+            onConfirm = { h, m -> onEndChanged(h * 60 + m); showEndPicker = false },
+            onDismiss = { showEndPicker = false }
+        )
+    }
+
+    Card {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Bedtime, null, Modifier.size(20.dp),
+                        tint = MaterialTheme.colorScheme.primary)
+                    Column {
+                        Text("Quiet Hours", style = MaterialTheme.typography.bodyLarge)
+                        Text("No notifications during this window",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+                Switch(checked = enabled, onCheckedChange = onEnabledChanged)
+            }
+            if (enabled) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = { showStartPicker = true },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Default.NightsStay, null, Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("From %02d:%02d".format(startMinute / 60, startMinute % 60))
+                    }
+                    OutlinedButton(
+                        onClick = { showEndPicker = true },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Default.WbSunny, null, Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Until %02d:%02d".format(endMinute / 60, endMinute % 60))
+                    }
+                }
+                val overnight = startMinute > endMinute
+                Text(
+                    if (overnight)
+                        "Quiet from %02d:%02d to %02d:%02d (overnight)".format(
+                            startMinute / 60, startMinute % 60, endMinute / 60, endMinute % 60)
+                    else
+                        "Quiet from %02d:%02d to %02d:%02d".format(
+                            startMinute / 60, startMinute % 60, endMinute / 60, endMinute % 60),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun QuietTimePickerDialog(
+    initialHour: Int,
+    initialMinute: Int,
+    onConfirm: (Int, Int) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val state = rememberTimePickerState(initialHour = initialHour, initialMinute = initialMinute)
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Select Time") },
+        text = { TimePicker(state = state) },
+        confirmButton = { TextButton(onClick = { onConfirm(state.hour, state.minute) }) { Text("OK") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
+}
+
+@Composable
+private fun BackupSetting(
+    exportMessage: String?,
+    importMessage: String?,
+    onExport: () -> Unit,
+    onImport: () -> Unit
+) {
+    Card {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Icon(Icons.Default.CloudDownload, null, Modifier.size(20.dp),
+                    tint = MaterialTheme.colorScheme.primary)
+                Text("Full Backup", style = MaterialTheme.typography.bodyLarge)
+            }
+            Text("Saves everything — Wi-Fi settings, confidence threshold, quiet hours, snooze, all profiles and their learned item priorities — as a single JSON file.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = onExport, modifier = Modifier.weight(1f)) {
+                    Icon(Icons.Default.Upload, null, Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Export")
+                }
+                OutlinedButton(onClick = onImport, modifier = Modifier.weight(1f)) {
+                    Icon(Icons.Default.Download, null, Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Import")
+                }
+            }
+            exportMessage?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall,
+                    color = if (it.startsWith("Export failed")) MaterialTheme.colorScheme.error
+                            else MaterialTheme.colorScheme.primary)
+            }
+            importMessage?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall,
+                    color = if (it.startsWith("Import failed")) MaterialTheme.colorScheme.error
+                            else MaterialTheme.colorScheme.primary)
+            }
         }
     }
 }
@@ -243,9 +549,7 @@ private fun ToggleSetting(
 ) {
     Card {
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -273,10 +577,7 @@ private fun SliderSetting(
 ) {
     Card {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text(label, style = MaterialTheme.typography.bodyLarge)
                 Text(valueLabel, style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.primary)
@@ -285,74 +586,8 @@ private fun SliderSetting(
                 Text(description, style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            Slider(
-                value = value,
-                onValueChange = onValueChange,
-                valueRange = valueRange,
-                steps = steps,
-                modifier = Modifier.fillMaxWidth()
-            )
-        }
-    }
-}
-
-// ── Previews ─────────────────────────────────────────────────────────────────
-
-@Preview(name = "Wi-Fi SSID setting", showBackground = true, widthDp = 360)
-@Composable
-private fun PreviewWifiSsidSetting() {
-    ExitSenseTheme { WifiSsidSetting(currentSsid = "HomeNetwork_5G", onSsidChanged = {}) }
-}
-
-@Preview(name = "Floor setting — floor 2", showBackground = true, widthDp = 360)
-@Composable
-private fun PreviewFloorSetting() {
-    ExitSenseTheme { FloorSetting(currentFloor = 2, onFloorChanged = {}) }
-}
-
-@Preview(name = "Toggle setting — on", showBackground = true, widthDp = 360)
-@Composable
-private fun PreviewToggleSetting() {
-    ExitSenseTheme {
-        ToggleSetting(label = "Enable Notifications",
-            description = "Show exit reminders when leaving home", checked = true, onCheckedChange = {})
-    }
-}
-
-@Preview(name = "Slider setting — confidence 70", showBackground = true, widthDp = 360)
-@Composable
-private fun PreviewSliderSetting() {
-    ExitSenseTheme {
-        SliderSetting(label = "Confidence Threshold",
-            description = "Higher = fewer false alarms but may miss some exits",
-            value = 70f, valueRange = 40f..100f, steps = 11, valueLabel = "70%", onValueChange = {})
-    }
-}
-
-@Preview(name = "Settings screen — light", showBackground = true, device = Devices.PIXEL_5)
-@Composable
-private fun PreviewSettingsScreen() {
-    ExitSenseTheme {
-        Scaffold(topBar = { ExitSenseTopBar(title = "Settings", onNavigateBack = {}) }) { padding ->
-            LazyColumn(
-                contentPadding = PaddingValues(start = 16.dp, end = 16.dp,
-                    top = padding.calculateTopPadding() + 8.dp, bottom = 24.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                item { SectionHeader("Wi-Fi Detection") }
-                item { WifiSsidSetting(currentSsid = "HomeNetwork_5G", onSsidChanged = {}) }
-                item { Spacer(Modifier.height(8.dp)); SectionHeader("Floor Detection") }
-                item { FloorSetting(currentFloor = 2, onFloorChanged = {}) }
-                item { Spacer(Modifier.height(8.dp)); SectionHeader("Notifications") }
-                item { ToggleSetting(label = "Enable Notifications",
-                    description = "Show exit reminders when leaving home", checked = true, onCheckedChange = {}) }
-                item { SliderSetting(label = "Snooze Duration", value = 5f,
-                    valueRange = 1f..15f, steps = 13, valueLabel = "5 min", onValueChange = {}) }
-                item { Spacer(Modifier.height(8.dp)); SectionHeader("Detection Sensitivity") }
-                item { SliderSetting(label = "Confidence Threshold",
-                    description = "Higher = fewer false alarms but may miss some exits",
-                    value = 70f, valueRange = 40f..100f, steps = 11, valueLabel = "70%", onValueChange = {}) }
-            }
+            Slider(value = value, onValueChange = onValueChange, valueRange = valueRange,
+                steps = steps, modifier = Modifier.fillMaxWidth())
         }
     }
 }

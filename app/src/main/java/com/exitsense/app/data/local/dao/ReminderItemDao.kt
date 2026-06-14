@@ -25,6 +25,9 @@ interface ReminderItemDao {
     @Query("DELETE FROM reminder_items WHERE id = :id")
     suspend fun deleteItem(id: Long)
 
+    @Query("DELETE FROM reminder_items WHERE profileId = :profileId")
+    suspend fun deleteItemsForProfile(profileId: Long)
+
     @Query("UPDATE reminder_items SET learnedPriority = :priority WHERE id = :id")
     suspend fun updateLearnedPriority(id: Long, priority: Float)
 

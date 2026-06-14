@@ -3,12 +3,14 @@ package com.exitsense.app.presentation.setup
 import android.Manifest
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
@@ -45,6 +47,9 @@ fun SetupWizardScreen(
         if (state.isComplete) onSetupComplete()
     }
 
+    val visibleSteps = if (state.hasBarometer) SetupStep.entries
+                       else SetupStep.entries.filter { it != SetupStep.FLOOR }
+
     Scaffold { padding ->
         Column(
             modifier = Modifier
@@ -54,25 +59,32 @@ fun SetupWizardScreen(
         ) {
             // Progress indicator
             Spacer(Modifier.height(16.dp))
-            SetupProgressBar(currentStep = state.currentStep)
+            SetupProgressBar(currentStep = state.currentStep, visibleSteps = visibleSteps)
             Spacer(Modifier.height(24.dp))
+
+            val totalSteps = visibleSteps.size
+            val stepNum = visibleSteps.indexOf(state.currentStep) + 1
 
             Box(modifier = Modifier.weight(1f)) {
                 when (state.currentStep) {
                     SetupStep.WIFI -> WifiSetupStep(
                         ssid = state.homeWifiSsid,
                         detectedSsid = state.detectedSsid,
+                        stepLabel = "Step $stepNum of $totalSteps",
+                        isError = state.wifiSsidError,
                         onSsidChanged = viewModel::onWifiSsidChanged,
                         onUseDetected = viewModel::useDetectedSsid
                     )
                     SetupStep.FLOOR -> FloorSetupStep(
                         selectedFloor = state.homeFloor,
+                        stepLabel = "Step $stepNum of $totalSteps",
                         onFloorChanged = viewModel::onFloorChanged
                     )
                     SetupStep.PROFILES -> ProfilesSetupStep(
+                        stepLabel = "Step $stepNum of $totalSteps",
                         onCreateOfficeProfile = viewModel::createDefaultOfficeProfile
                     )
-                    SetupStep.PERMISSIONS -> PermissionsSetupStep()
+                    SetupStep.PERMISSIONS -> PermissionsSetupStep(stepLabel = "Step $stepNum of $totalSteps")
                 }
             }
 
@@ -107,15 +119,14 @@ fun SetupWizardScreen(
 }
 
 @Composable
-private fun SetupProgressBar(currentStep: SetupStep) {
-    val steps = SetupStep.entries
-    val currentIndex = steps.indexOf(currentStep)
+private fun SetupProgressBar(currentStep: SetupStep, visibleSteps: List<SetupStep>) {
+    val currentIndex = visibleSteps.indexOf(currentStep)
 
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(4.dp)
     ) {
-        steps.forEachIndexed { index, _ ->
+        visibleSteps.forEachIndexed { index, _ ->
             Box(
                 modifier = Modifier
                     .weight(1f)
@@ -136,6 +147,8 @@ private fun SetupProgressBar(currentStep: SetupStep) {
 private fun WifiSetupStep(
     ssid: String,
     detectedSsid: String?,
+    stepLabel: String,
+    isError: Boolean = false,
     onSsidChanged: (String) -> Unit,
     onUseDetected: () -> Unit
 ) {
@@ -145,7 +158,7 @@ private fun WifiSetupStep(
     ) {
         StepHeader(
             icon = Icons.Default.Wifi,
-            step = "Step 1 of 4",
+            step = stepLabel,
             title = "Set Your Home Wi-Fi",
             subtitle = "The app uses Wi-Fi disconnection as the primary exit signal — no GPS needed."
         )
@@ -178,20 +191,26 @@ private fun WifiSetupStep(
             label = { Text("Home Wi-Fi Name (SSID)") },
             placeholder = { Text("e.g. MyHomeNetwork") },
             modifier = Modifier.fillMaxWidth(),
-            singleLine = true
+            singleLine = true,
+            isError = isError,
+            supportingText = if (isError) {
+                { Text("Wi-Fi name is required to detect when you leave home.") }
+            } else null
         )
 
-        Text(
-            "You can change this later in Settings.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+        if (!isError) {
+            Text(
+                "You can change this later in Settings.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
     }
 }
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun FloorSetupStep(selectedFloor: Int, onFloorChanged: (Int) -> Unit) {
+private fun FloorSetupStep(selectedFloor: Int, stepLabel: String, onFloorChanged: (Int) -> Unit) {
     var draft by remember(selectedFloor) { mutableStateOf(if (selectedFloor > 4) selectedFloor.toString() else "") }
     val focusManager = LocalFocusManager.current
     val quickFloors = listOf(0 to "G", 1 to "1st", 2 to "2nd", 3 to "3rd", 4 to "4th")
@@ -202,9 +221,9 @@ private fun FloorSetupStep(selectedFloor: Int, onFloorChanged: (Int) -> Unit) {
     ) {
         StepHeader(
             icon = Icons.Default.Apartment,
-            step = "Step 2 of 4",
+            step = stepLabel,
             title = "Home Floor",
-            subtitle = "If your device has a barometer, the app can detect descent toward the exit."
+            subtitle = "Your device has a barometer — the app can detect floor descent toward the exit."
         )
         Text("Which floor do you live on?", style = MaterialTheme.typography.bodyLarge)
         FlowRow(
@@ -256,7 +275,7 @@ private fun FloorSetupStep(selectedFloor: Int, onFloorChanged: (Int) -> Unit) {
 }
 
 @Composable
-private fun ProfilesSetupStep(onCreateOfficeProfile: () -> Unit) {
+private fun ProfilesSetupStep(stepLabel: String, onCreateOfficeProfile: () -> Unit) {
     var created by remember { mutableStateOf(false) }
     Column(
         modifier = Modifier.verticalScroll(rememberScrollState()),
@@ -264,7 +283,7 @@ private fun ProfilesSetupStep(onCreateOfficeProfile: () -> Unit) {
     ) {
         StepHeader(
             icon = Icons.Default.List,
-            step = "Step 3 of 4",
+            step = stepLabel,
             title = "Create Your First Profile",
             subtitle = "Profiles define what items to check and when. You can add more later."
         )
@@ -300,20 +319,54 @@ private fun ProfilesSetupStep(onCreateOfficeProfile: () -> Unit) {
 }
 
 @Composable
-private fun PermissionsSetupStep() {
+private fun PermissionsSetupStep(stepLabel: String) {
     val context = LocalContext.current
-    val activityLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions()
-    ) {}
-    val batteryLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) {}
 
-    var activityGranted by remember { mutableStateOf(false) }
-    var notifyGranted by remember { mutableStateOf(false) }
+    var activityGranted by remember {
+        mutableStateOf(
+            Build.VERSION.SDK_INT < Build.VERSION_CODES.Q ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.ACTIVITY_RECOGNITION) == PackageManager.PERMISSION_GRANTED
+        )
+    }
+    var notifyGranted by remember {
+        mutableStateOf(
+            Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+        )
+    }
+    var wifiNameGranted by remember {
+        mutableStateOf(
+            Build.VERSION.SDK_INT < Build.VERSION_CODES.P ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        )
+    }
     var batteryGranted by remember {
         val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
         mutableStateOf(pm.isIgnoringBatteryOptimizations(context.packageName))
+    }
+
+    val activityLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { results -> activityGranted = results[Manifest.permission.ACTIVITY_RECOGNITION] == true }
+
+    val notifyLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { results -> notifyGranted = results[Manifest.permission.POST_NOTIFICATIONS] == true }
+
+    val wifiNameLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { results ->
+        wifiNameGranted =
+            results[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+            results[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+    }
+
+    val batteryLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) {
+        val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+        batteryGranted = pm.isIgnoringBatteryOptimizations(context.packageName)
     }
 
     Column(
@@ -322,9 +375,9 @@ private fun PermissionsSetupStep() {
     ) {
         StepHeader(
             icon = Icons.Default.Security,
-            step = "Step 4 of 4",
+            step = stepLabel,
             title = "Grant Permissions",
-            subtitle = "These permissions let the app detect motion and send notifications. Location is NOT required."
+            subtitle = "These permissions enable motion detection, notifications, and Wi-Fi name matching."
         )
 
         PermissionCard(
@@ -334,10 +387,7 @@ private fun PermissionsSetupStep() {
             isGranted = activityGranted,
             onRequest = {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    activityLauncher.launch(
-                        arrayOf(Manifest.permission.ACTIVITY_RECOGNITION)
-                    )
-                    activityGranted = true
+                    activityLauncher.launch(arrayOf(Manifest.permission.ACTIVITY_RECOGNITION))
                 } else {
                     activityGranted = true
                 }
@@ -351,8 +401,24 @@ private fun PermissionsSetupStep() {
                 description = "Required to show exit reminders on Android 13+.",
                 isGranted = notifyGranted,
                 onRequest = {
-                    activityLauncher.launch(arrayOf(Manifest.permission.POST_NOTIFICATIONS))
-                    notifyGranted = true
+                    notifyLauncher.launch(arrayOf(Manifest.permission.POST_NOTIFICATIONS))
+                }
+            )
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            PermissionCard(
+                icon = Icons.Default.Wifi,
+                title = "Wi-Fi Name Access",
+                description = "Allows reading your Wi-Fi name to detect when you leave home. Android requires location permission for this — your location is never stored or shared.",
+                isGranted = wifiNameGranted,
+                onRequest = {
+                    wifiNameLauncher.launch(
+                        arrayOf(
+                            Manifest.permission.ACCESS_FINE_LOCATION,
+                            Manifest.permission.ACCESS_COARSE_LOCATION
+                        )
+                    )
                 }
             )
         }
@@ -369,7 +435,6 @@ private fun PermissionsSetupStep() {
                         Uri.parse("package:${context.packageName}")
                     )
                 )
-                batteryGranted = true
             }
         )
     }
@@ -452,10 +517,10 @@ private fun PreviewSetupWifiStep() {
         Scaffold { padding ->
             Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 24.dp)) {
                 Spacer(Modifier.height(16.dp))
-                SetupProgressBar(currentStep = SetupStep.WIFI)
+                SetupProgressBar(currentStep = SetupStep.WIFI, visibleSteps = SetupStep.entries)
                 Spacer(Modifier.height(24.dp))
                 Box(Modifier.weight(1f)) {
-                    WifiSetupStep(ssid = "", detectedSsid = "HomeNetwork_5G", onSsidChanged = {}, onUseDetected = {})
+                    WifiSetupStep(ssid = "", detectedSsid = "HomeNetwork_5G", stepLabel = "Step 1 of 4", onSsidChanged = {}, onUseDetected = {})
                 }
                 Row(Modifier.fillMaxWidth().padding(bottom = 24.dp)) {
                     Button(onClick = {}, Modifier.fillMaxWidth()) { Text("Next") }
@@ -472,10 +537,10 @@ private fun PreviewSetupFloorStep() {
         Scaffold { padding ->
             Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 24.dp)) {
                 Spacer(Modifier.height(16.dp))
-                SetupProgressBar(currentStep = SetupStep.FLOOR)
+                SetupProgressBar(currentStep = SetupStep.FLOOR, visibleSteps = SetupStep.entries)
                 Spacer(Modifier.height(24.dp))
                 Box(Modifier.weight(1f)) {
-                    FloorSetupStep(selectedFloor = 3, onFloorChanged = {})
+                    FloorSetupStep(selectedFloor = 3, stepLabel = "Step 2 of 4", onFloorChanged = {})
                 }
                 Row(Modifier.fillMaxWidth().padding(bottom = 24.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     OutlinedButton(onClick = {}, Modifier.weight(1f)) { Text("Back") }
@@ -493,10 +558,10 @@ private fun PreviewSetupProfilesStep() {
         Scaffold { padding ->
             Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 24.dp)) {
                 Spacer(Modifier.height(16.dp))
-                SetupProgressBar(currentStep = SetupStep.PROFILES)
+                SetupProgressBar(currentStep = SetupStep.PROFILES, visibleSteps = SetupStep.entries)
                 Spacer(Modifier.height(24.dp))
                 Box(Modifier.weight(1f)) {
-                    ProfilesSetupStep(onCreateOfficeProfile = {})
+                    ProfilesSetupStep(stepLabel = "Step 3 of 4", onCreateOfficeProfile = {})
                 }
                 Row(Modifier.fillMaxWidth().padding(bottom = 24.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     OutlinedButton(onClick = {}, Modifier.weight(1f)) { Text("Back") }
@@ -514,10 +579,10 @@ private fun PreviewSetupPermissionsStep() {
         Scaffold { padding ->
             Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 24.dp)) {
                 Spacer(Modifier.height(16.dp))
-                SetupProgressBar(currentStep = SetupStep.PERMISSIONS)
+                SetupProgressBar(currentStep = SetupStep.PERMISSIONS, visibleSteps = SetupStep.entries)
                 Spacer(Modifier.height(24.dp))
                 Box(Modifier.weight(1f)) {
-                    PermissionsSetupStep()
+                    PermissionsSetupStep(stepLabel = "Step 4 of 4")
                 }
                 Row(Modifier.fillMaxWidth().padding(bottom = 24.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     OutlinedButton(onClick = {}, Modifier.weight(1f)) { Text("Back") }

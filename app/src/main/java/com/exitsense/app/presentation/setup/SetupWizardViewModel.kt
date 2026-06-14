@@ -1,7 +1,5 @@
 package com.exitsense.app.presentation.setup
 
-import android.content.Context
-import android.net.wifi.WifiManager
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.exitsense.app.data.preferences.UserPreferencesDataStore
@@ -9,12 +7,14 @@ import com.exitsense.app.domain.model.ReminderItem
 import com.exitsense.app.domain.model.ReminderProfile
 import com.exitsense.app.domain.model.ScheduleType
 import com.exitsense.app.domain.repository.ReminderRepository
+import com.exitsense.app.sensors.PressureProvider
+import com.exitsense.app.sensors.WifiProvider
 import dagger.hilt.android.lifecycle.HiltViewModel
-import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
+// FLOOR step is skipped on devices without a barometer — order stays the same, step just isn't shown.
 enum class SetupStep { WIFI, FLOOR, PROFILES, PERMISSIONS }
 
 data class SetupUiState(
@@ -22,37 +22,44 @@ data class SetupUiState(
     val homeWifiSsid: String = "",
     val homeFloor: Int = 0,
     val detectedSsid: String? = null,
+    val detectedNetworkId: Int = -1,
     val isComplete: Boolean = false,
-    val isLoading: Boolean = false
+    val isLoading: Boolean = false,
+    val hasBarometer: Boolean = true,
+    val wifiSsidError: Boolean = false
 )
 
 @HiltViewModel
 class SetupWizardViewModel @Inject constructor(
-    @ApplicationContext private val context: Context,
     private val dataStore: UserPreferencesDataStore,
-    private val reminderRepository: ReminderRepository
+    private val reminderRepository: ReminderRepository,
+    private val wifiProvider: WifiProvider,
+    private val pressureProvider: PressureProvider
 ) : ViewModel() {
 
-    private val _uiState = MutableStateFlow(SetupUiState())
+    private val hasBarometer = pressureProvider.pressureData.value.isAvailable
+
+    private val _uiState = MutableStateFlow(SetupUiState(hasBarometer = hasBarometer))
     val uiState: StateFlow<SetupUiState> = _uiState.asStateFlow()
 
     init {
-        detectCurrentWifi()
+        wifiProvider.startMonitoring()
+        wifiProvider.refresh()
+        viewModelScope.launch {
+            wifiProvider.wifiState.collect { wifi ->
+                _uiState.update {
+                    it.copy(detectedSsid = wifi.ssid, detectedNetworkId = wifi.networkId)
+                }
+            }
+        }
     }
 
-    @Suppress("DEPRECATION")
-    private fun detectCurrentWifi() {
-        try {
-            val wifiManager = context.applicationContext
-                .getSystemService(Context.WIFI_SERVICE) as WifiManager
-            val info = wifiManager.connectionInfo
-            val ssid = info?.ssid?.removeSurrounding("\"")
-                ?.takeIf { it.isNotBlank() && it != "<unknown ssid>" }
-            _uiState.update { it.copy(detectedSsid = ssid) }
-        } catch (_: Exception) {}
+    override fun onCleared() {
+        wifiProvider.stopMonitoring()
+        super.onCleared()
     }
 
-    fun onWifiSsidChanged(ssid: String) = _uiState.update { it.copy(homeWifiSsid = ssid) }
+    fun onWifiSsidChanged(ssid: String) = _uiState.update { it.copy(homeWifiSsid = ssid, wifiSsidError = false) }
     fun onFloorChanged(floor: Int) = _uiState.update { it.copy(homeFloor = floor) }
 
     fun useDetectedSsid() {
@@ -62,20 +69,25 @@ class SetupWizardViewModel @Inject constructor(
     fun goToStep(step: SetupStep) = _uiState.update { it.copy(currentStep = step) }
 
     fun nextStep() {
-        val next = when (_uiState.value.currentStep) {
-            SetupStep.WIFI -> SetupStep.FLOOR
+        val state = _uiState.value
+        if (state.currentStep == SetupStep.WIFI && state.homeWifiSsid.isBlank()) {
+            _uiState.update { it.copy(wifiSsidError = true) }
+            return
+        }
+        val next = when (state.currentStep) {
+            SetupStep.WIFI -> if (hasBarometer) SetupStep.FLOOR else SetupStep.PROFILES
             SetupStep.FLOOR -> SetupStep.PROFILES
             SetupStep.PROFILES -> SetupStep.PERMISSIONS
             SetupStep.PERMISSIONS -> return
         }
-        _uiState.update { it.copy(currentStep = next) }
+        _uiState.update { it.copy(currentStep = next, wifiSsidError = false) }
     }
 
     fun previousStep() {
         val prev = when (_uiState.value.currentStep) {
             SetupStep.WIFI -> return
             SetupStep.FLOOR -> SetupStep.WIFI
-            SetupStep.PROFILES -> SetupStep.FLOOR
+            SetupStep.PROFILES -> if (hasBarometer) SetupStep.FLOOR else SetupStep.WIFI
             SetupStep.PERMISSIONS -> SetupStep.PROFILES
         }
         _uiState.update { it.copy(currentStep = prev) }
@@ -107,6 +119,7 @@ class SetupWizardViewModel @Inject constructor(
         val state = _uiState.value
         viewModelScope.launch {
             dataStore.updateHomeWifiSsid(state.homeWifiSsid)
+            if (state.detectedNetworkId != -1) dataStore.addHomeNetworkId(state.detectedNetworkId)
             dataStore.updateHomeFloor(state.homeFloor)
             dataStore.setSetupComplete(true)
             _uiState.update { it.copy(isComplete = true) }

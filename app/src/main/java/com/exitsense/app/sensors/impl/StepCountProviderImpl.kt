@@ -8,6 +8,7 @@ import android.hardware.SensorManager
 import com.exitsense.app.sensors.StepCountProvider
 import com.exitsense.app.sensors.StepData
 import dagger.hilt.android.qualifiers.ApplicationContext
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
@@ -29,17 +30,17 @@ class StepCountProviderImpl @Inject constructor(
     private val stepTimestamps = ArrayDeque<Long>()
     private val windowMs = 60_000L
 
-    @Volatile private var isRunning = false
+    private val refCount = AtomicInteger(0)
 
     override fun startMonitoring() {
-        if (isRunning || stepDetector == null) return
-        isRunning = true
+        if (stepDetector == null) return
+        if (refCount.getAndIncrement() > 0) return
         sensorManager.registerListener(this, stepDetector, SensorManager.SENSOR_DELAY_NORMAL)
     }
 
     override fun stopMonitoring() {
-        if (!isRunning) return
-        isRunning = false
+        if (stepDetector == null) return
+        if (refCount.decrementAndGet() > 0) return
         sensorManager.unregisterListener(this)
         stepTimestamps.clear()
         _stepData.update { it.copy(stepsLastMinute = 0) }

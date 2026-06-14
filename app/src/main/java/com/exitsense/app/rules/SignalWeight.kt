@@ -15,8 +15,9 @@ data class SignalWeight(
     val barometerDescent: Float = 10f,
     val stepCount: Float = 10f,
     val chargerUnplugged: Float = 10f,
-    val ambientLight: Float = 0f            // not scored; kept for display only
+    val ambientLight: Float = 5f
 )
 
-/** Scores must reach or exceed this threshold to fire an exit event. */
-const val DEFAULT_EXIT_THRESHOLD = 90f
+// Threshold rationale: WiFi(50) + walking(15) + steps(10) = 75 is a clear exit.
+// WiFi alone(50) or walking alone(15) can't trigger it. Charger or light add helpful nudges.
+const val DEFAULT_EXIT_THRESHOLD = 75f

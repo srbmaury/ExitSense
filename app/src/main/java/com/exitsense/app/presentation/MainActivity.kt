@@ -17,8 +17,7 @@ import com.exitsense.app.presentation.navigation.AppNavGraph
 import com.exitsense.app.presentation.navigation.Screen
 import com.exitsense.app.presentation.theme.ExitSenseTheme
 import dagger.hilt.android.AndroidEntryPoint
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.flow.map
 import javax.inject.Inject
 
 @AndroidEntryPoint
@@ -30,26 +29,26 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        // Read setup state synchronously on startup to choose the correct start destination.
-        // Only done once; subsequent preference changes are handled by ViewModels.
-        val isSetupComplete = runBlocking {
-            preferencesDataStore.userPreferences.first().isSetupComplete
-        }
-
         setContent {
             ExitSenseTheme {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    val navController = rememberNavController()
-                    val startDestination = if (isSetupComplete) Screen.Home.route
-                                           else Screen.SetupWizard.route
+                    // Null until the first DataStore emission arrives (sub-millisecond on warm
+                    // storage); render nothing rather than blocking the main thread.
+                    val isSetupComplete by remember {
+                        preferencesDataStore.userPreferences.map { it.isSetupComplete }
+                    }.collectAsStateWithLifecycle(initialValue = null)
 
-                    AppNavGraph(
-                        navController = navController,
-                        startDestination = startDestination
-                    )
+                    if (isSetupComplete != null) {
+                        val navController = rememberNavController()
+                        AppNavGraph(
+                            navController = navController,
+                            startDestination = if (isSetupComplete == true) Screen.Home.route
+                                               else Screen.SetupWizard.route
+                        )
+                    }
                 }
             }
         }

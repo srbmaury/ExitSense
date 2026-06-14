@@ -8,6 +8,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.navArgument
 import com.exitsense.app.presentation.history.HistoryScreen
 import com.exitsense.app.presentation.home.HomeScreen
+import com.exitsense.app.presentation.integrations.IntegrationsScreen
 import com.exitsense.app.presentation.profiles.AddEditProfileScreen
 import com.exitsense.app.presentation.profiles.ProfilesScreen
 import com.exitsense.app.presentation.settings.SettingsScreen
@@ -24,7 +25,8 @@ fun AppNavGraph(
             HomeScreen(
                 onNavigateToProfiles = { navController.navigate(Screen.Profiles.route) },
                 onNavigateToHistory = { navController.navigate(Screen.History.route) },
-                onNavigateToSettings = { navController.navigate(Screen.Settings.route) }
+                onNavigateToSettings = { navController.navigate(Screen.Settings.route) },
+                onNavigateToIntegrations = { navController.navigate(Screen.Integrations.route) }
             )
         }
 
@@ -61,6 +63,10 @@ fun AppNavGraph(
 
         composable(Screen.Settings.route) {
             SettingsScreen(onNavigateBack = { navController.popBackStack() })
+        }
+
+        composable(Screen.Integrations.route) {
+            IntegrationsScreen(onNavigateBack = { navController.popBackStack() })
         }
 
         composable(Screen.SetupWizard.route) {

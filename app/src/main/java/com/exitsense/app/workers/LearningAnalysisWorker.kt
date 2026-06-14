@@ -3,6 +3,8 @@ package com.exitsense.app.workers
 import android.content.Context
 import androidx.hilt.work.HiltWorker
 import androidx.work.*
+import com.exitsense.app.data.local.dao.ExitEventDao
+import com.exitsense.app.data.local.dao.SensorSnapshotDao
 import com.exitsense.app.domain.repository.LearningRepository
 import com.exitsense.app.domain.repository.ReminderRepository
 import dagger.assisted.Assisted
@@ -15,7 +17,9 @@ class LearningAnalysisWorker @AssistedInject constructor(
     @Assisted context: Context,
     @Assisted params: WorkerParameters,
     private val learningRepository: LearningRepository,
-    private val reminderRepository: ReminderRepository
+    private val reminderRepository: ReminderRepository,
+    private val sensorSnapshotDao: SensorSnapshotDao,
+    private val exitEventDao: ExitEventDao
 ) : CoroutineWorker(context, params) {
 
     companion object {
@@ -40,6 +44,9 @@ class LearningAnalysisWorker @AssistedInject constructor(
             profiles.forEach { profile ->
                 learningRepository.analyzeAndUpdatePriorities(profile.id)
             }
+            val cutoff = System.currentTimeMillis() - TimeUnit.DAYS.toMillis(30)
+            sensorSnapshotDao.deleteOldSnapshots(cutoff)
+            exitEventDao.deleteOldEvents(cutoff)
             Result.success()
         } catch (e: Exception) {
             Result.failure()

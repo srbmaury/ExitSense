@@ -60,18 +60,19 @@ class HomeViewModelTest {
         reminderRepository = mockk(relaxed = true)
         exitDetector = mockk()
         preferencesDataStore = mockk()
-        motionProvider = mockk()
-        wifiProvider = mockk()
-        screenStateProvider = mockk()
+        motionProvider = mockk(relaxed = true)
+        wifiProvider = mockk(relaxed = true)
+        screenStateProvider = mockk(relaxed = true)
         pressureProvider = mockk(relaxed = true)
         stepCountProvider = mockk(relaxed = true)
         chargerStateProvider = mockk(relaxed = true)
         ambientLightProvider = mockk(relaxed = true)
 
         every { getActiveProfiles() } returns flowOf(emptyList())
+        every { reminderRepository.getActiveProfiles() } returns flowOf(emptyList())
         every { exitEventRepository.getRecentExitEvents(any()) } returns flowOf(emptyList())
         every { preferencesDataStore.userPreferences } returns flowOf(UserPreferences(isSetupComplete = true))
-        coEvery { exitDetector.evaluate(any(), any(), any()) } returns ExitDetectionResult(
+        coEvery { exitDetector.evaluate(any(), any(), any(), any()) } returns ExitDetectionResult(
             confidenceScore = 0f, signals = emptyList<ExitSignal>(), isExitDetected = false
         )
         every { motionProvider.currentMotion } returns MutableStateFlow(MotionType.STILL)
@@ -147,7 +148,7 @@ class HomeViewModelTest {
             isExitDetected = true
         )
         coEvery {
-            exitDetector.evaluate(any(), any(), any())
+            exitDetector.evaluate(any(), any(), any(), any())
         } returns mockResult
 
         val viewModel = createViewModel()

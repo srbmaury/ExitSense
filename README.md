@@ -1,252 +1,176 @@
-# Smart Exit Reminder — ExitSense
+# ExitSense
 
-A production-ready Android application that intelligently detects when you are leaving home and reminds you to take everything you need — **without GPS or location permission**.
+**A smart exit reminder for Android — no GPS, no cloud, no account.**
 
----
-
-## Quick Start
-
-```
-Build status : ✅  DEBUG APK builds successfully
-Tests        : ✅  30/30 passing (5 test suites)
-APK size     : ~19 MB (debug)
-Min SDK      : API 26 (Android 8.0)
-Target SDK   : API 36 (Android 16)
-```
+ExitSense watches your sensors and figures out when you're walking out the door. When it's confident enough, it sends you a notification with your personal checklist so you never forget your keys, badge, or laptop again.
 
 ---
 
-## Opening in Android Studio
+## How it knows you're leaving
+
+The app scores seven independent signals every time something meaningful changes. When the total crosses a threshold (default 75), the notification fires.
+
+| Signal | Points | When it fires |
+|---|---:|---|
+| Left home Wi-Fi | +50 | Disconnected, or connected to a different network |
+| Still on home Wi-Fi | **0 (hard cap)** | Short-circuits everything — you're still home |
+| Driving detected | +25 | Accelerometer variance pattern matches vehicle |
+| Walking detected | +15 | Accelerometer cadence matches footsteps |
+| Running detected | +15 | |
+| Charger unplugged | +10 | Within the last 30 minutes |
+| Barometer descent | +10 | Pressure dropped ≥ 0.3 hPa — roughly one floor |
+| Steps in last 60 s | +10 | ≥ 20 steps detected via step detector |
+| Screen recently unlocked | +5 | Unlocked within the last 3 minutes |
+| Outdoor ambient light | +5 | Sensor reading above outdoor lux threshold |
+| Within profile schedule | +5 | Current time falls inside a profile's active window |
+
+**Threshold is adjustable** (40–100) in Settings. At 75 you need at least two strong signals — Wi-Fi alone isn't enough.
+
+**Examples at threshold 75:**
+- Wi-Fi left (+50) + Walking (+15) + Charger unplugged (+10) = **75** ✓
+- Wi-Fi left (+50) + Driving (+25) = **75** ✓
+- Wi-Fi left (+50) + Walking (+15) + Steps (+10) = **75** ✓
+
+---
+
+## Wi-Fi detection without location permission
+
+Android 9+ hides the Wi-Fi name (SSID) unless you grant Location permission. ExitSense handles this in two ways:
+
+- **With Location permission** — matches by SSID name (what you type in setup).
+- **Without Location permission** — matches by Android's internal network ID, which is readable without location permission via `NetworkCallback`. You still get accurate home detection.
+
+Either track works. You can switch between them in Settings.
+
+---
+
+## Monitoring modes
+
+ExitSense runs detection in two modes simultaneously:
+
+| Mode | How | Interval |
+|---|---|---|
+| **Passive** | WorkManager periodic job | Every 15 minutes |
+| **Active** | Foreground service, reacts to sensor changes | 2-second debounce |
+
+The foreground service is optional — turn it on from the Home screen toggle for faster reaction times. The periodic job runs regardless.
+
+---
+
+## Profiles
+
+A profile is a named checklist tied to a schedule. You can have as many as you want.
+
+- **Schedule:** Weekdays, Weekends, Every day, or Custom days
+- **Time window:** e.g. 08:00–10:00 — notifications only fire inside this window
+- **Items:** anything to remember (Laptop, Keys, Wallet, Badge…)
+- **Active toggle:** enable or disable a profile without deleting it
+
+Notification cooldown is **24 hours per profile** — Office and Gym each get their own countdown.
+
+---
+
+## Notifications
+
+When an exit is detected, the notification shows:
+
+- Your profile's checklist items
+- Weather alert if rain is forecast (optional, needs Location)
+- Upcoming calendar events in the next 3 hours (optional, needs Calendar permission)
+
+**Actions on the notification:**
+- **Confirm** — marks that you took your items; recorded for the learning system
+- **Snooze** — re-shows after a configurable delay (default 2 minutes, range 1–15 min)
+
+---
+
+## Learning system
+
+Every time you confirm a notification, the app records which items you actually acknowledged. Over time it adjusts a priority multiplier (range 0.2–2.0) per item — items you consistently confirm rank higher, items you always ignore rank lower.
+
+---
+
+## Optional integrations
+
+Both are off by default and require additional permissions.
+
+**Weather** — Fetches a brief forecast from [Open-Meteo](https://open-meteo.com/) (free, no API key). Adds a rain/heat/cold alert line to the notification body. Requires `ACCESS_FINE_LOCATION`.
+
+**Calendar** — Reads upcoming events from your locally-synced device calendar and includes them in the notification. Requires `READ_CALENDAR`. No sign-in, no cloud sync.
+
+---
+
+## Screens
+
+| Screen | What you do there |
+|---|---|
+| Home | Toggle monitoring, see live sensor readings, run a manual detection check |
+| Profiles | View, enable/disable, edit, or delete reminder profiles |
+| Add / Edit Profile | Set the name, schedule, active days, time window, and checklist items |
+| History | Browse past exit events and confidence scores |
+| Settings | Change home Wi-Fi, home floor, notification toggle, snooze duration, confidence threshold |
+| Integrations | Enable/disable Weather and Calendar, grant required permissions |
+| Setup Wizard | First-launch flow — Wi-Fi, floor, first profile, permissions |
+
+---
+
+## Building the app
 
 ### Prerequisites
 
-| Tool | Required version | Notes |
-|------|------------------|-------|
-| Android Studio | Meerkat (2024.3) or newer | [Download](https://developer.android.com/studio) |
-| JDK | **21** (bundled with Android Studio) | Do **not** use the system JDK if it is v22+ |
-| Android SDK Platform | **API 36** | Install via SDK Manager if missing |
-| Android Build Tools | **36.1.0** or newer | Install via SDK Manager if missing |
-| Gradle | **9.3** (auto-downloaded by wrapper) | No manual install needed |
+| | Required |
+|---|---|
+| Android Studio | Meerkat 2024.3 or newer |
+| JDK | 21 — use Android Studio's bundled JDK, **not** a system JDK 22+ |
+| Android SDK | API 36 |
 
-### Step-by-step
+### Android Studio
 
-1. **Open the project**
-   ```
-   Android Studio → File → Open → select the ExitSense/ folder
-   ```
-   Android Studio will automatically detect the `settings.gradle.kts` and begin Gradle sync.
+1. **File → Open** → select the `ExitSense/` folder
+2. Wait for Gradle sync (first run downloads ~300 MB)
+3. Select a device or emulator → press **Run** (Shift+F10)
 
-2. **Wait for Gradle sync**
-   The first sync downloads all Maven dependencies (~300 MB). Progress is shown in the
-   *Build* tool window at the bottom. This takes 2–5 minutes on a first run.
+> If sync fails with a `jlink` error:
+> `Settings → Build, Execution, Deployment → Build Tools → Gradle → Gradle JDK → Android Studio default JDK (21)`
 
-3. **Configure the JDK** *(only needed if sync fails with a JDK error)*
-   ```
-   File → Settings → Build, Execution, Deployment → Build Tools → Gradle
-   Gradle JDK → select "Android Studio default JDK" (JDK 21)
-   ```
-   On macOS the Gradle JDK setting is under:
-   ```
-   Android Studio → Settings → Build, Execution, Deployment → Build Tools → Gradle
-   ```
+### Command line
 
-4. **Run on a device or emulator**
-   - Select a device from the run-target dropdown (top toolbar).
-   - Click **▶ Run** (Shift+F10) to build and install.
+Set `JAVA_HOME` to Android Studio's bundled JDK first:
 
-5. **Grant permissions on first launch**
-   The 4-step Setup Wizard covers Wi-Fi name, home floor, default profile, and permissions
-   (Activity Recognition · Post Notifications · Battery Optimization).
-
----
-
-## Command-line Build
-
-> These commands work from the `ExitSense/` project root. The first run downloads
-> Gradle 9.3 and all Maven dependencies — internet connection required.
-
-### Set the correct JDK
-
-Android Studio ships JDK 21 at a known path. Export it before running any `./gradlew` command:
-
-**macOS:**
 ```bash
+# macOS
 export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
-```
 
-**Linux (typical Android Studio install):**
-```bash
+# Linux
 export JAVA_HOME="$HOME/android-studio/jbr"
 ```
 
-**Windows (Git Bash / PowerShell):**
-```powershell
-$env:JAVA_HOME = "C:\Program Files\Android\Android Studio\jbr"
-```
-
-> **Why?** The system JDK may be newer than JDK 21. AGP 8.9 uses `jlink`
-> internally and it is not compatible with JDK 22+.
-
-### Build commands
-
 ```bash
-# Debug APK — fastest, includes debug symbols
+# Debug APK
 ./gradlew assembleDebug
 
-# Release APK (requires signing config — see Signing section below)
-./gradlew assembleRelease
-
-# Install debug APK directly to a connected device / running emulator
+# Install to connected device
 ./gradlew installDebug
 
-# Run all unit tests
+# Run unit tests
 ./gradlew test
 
-# Run unit tests and generate HTML coverage report
-./gradlew testDebugUnitTest
-# Report: app/build/reports/tests/testDebugUnitTest/index.html
-
-# Full clean build (use when switching branches or after schema changes)
+# Clean build
 ./gradlew clean assembleDebug
 ```
 
-### APK output location
-
-```
-app/build/outputs/apk/debug/app-debug.apk       (~19 MB)
-app/build/outputs/apk/release/app-release.apk   (after signing)
-```
+Output: `app/build/outputs/apk/debug/app-debug.apk`
 
 ---
 
-## Signing a Release APK
+## First launch
 
-1. In Android Studio: **Build → Generate Signed Bundle / APK → APK → Next**
-2. Create or select a keystore file.
-3. Fill alias, key password, store password → **Next** → select `release` → **Finish**.
+The Setup Wizard runs once on install:
 
-Or via command line: add a `signingConfigs` block in `app/build.gradle.kts`:
-
-```kotlin
-signingConfigs {
-    create("release") {
-        storeFile = file("path/to/keystore.jks")
-        storePassword = System.getenv("STORE_PASSWORD")
-        keyAlias = "your-alias"
-        keyPassword = System.getenv("KEY_PASSWORD")
-    }
-}
-buildTypes {
-    release {
-        signingConfig = signingConfigs.getByName("release")
-    }
-}
-```
-
----
-
-## Architecture
-
-```
-ExitSense/app/src/main/java/com/exitsense/app/
-├── data/
-│   ├── local/
-│   │   ├── dao/          Room DAOs (5 interfaces)
-│   │   ├── database/     AppDatabase + MIGRATION_1_2 + MIGRATION_2_3
-│   │   ├── entities/     Room entities (5 tables)
-│   │   └── mapper/       Entity ↔ Domain converters
-│   ├── preferences/      DataStore — user settings (home Wi-Fi, threshold…)
-│   └── repository/       Repository implementations (3 classes)
-├── di/                   Hilt modules (Database, Repository, Sensor, Notification)
-├── domain/
-│   ├── model/            Pure Kotlin models (no Android imports)
-│   ├── repository/       Interfaces consumed by use-cases
-│   └── usecase/          Business logic (6 use-cases)
-├── notifications/        ExitNotificationManager + NotificationActionReceiver
-├── presentation/
-│   ├── components/       Shared Compose components
-│   ├── history/          History screen + ViewModel
-│   ├── home/             Home dashboard + ViewModel
-│   ├── navigation/       NavGraph + Screen sealed class
-│   ├── profiles/         Profile list + Add/Edit screens + ViewModels
-│   ├── settings/         Settings screen + ViewModel
-│   ├── setup/            4-step wizard + ViewModel
-│   └── theme/            Material 3 (Color, Type, Theme — dark + light)
-├── receivers/            BootReceiver (re-schedules WorkManager)
-├── rules/
-│   ├── impl/             ExitDetectorImpl — confidence scoring engine
-│   ├── ExitDetector.kt   Interface (mockable in tests)
-│   ├── SignalWeight.kt   Configurable per-signal weights
-│   └── TimeRuleEvaluator.kt
-├── sensors/
-│   ├── impl/             MotionProviderImpl, WifiProviderImpl, PressureProviderImpl,
-│   │                     ScreenStateProviderImpl, StepCountProviderImpl,
-│   │                     ChargerStateProviderImpl, AmbientLightProviderImpl
-│   └── *.kt              Interfaces + data classes (mockable in tests)
-├── service/              ExitMonitoringService (foreground)
-├── workers/              ExitDetectionWorker, LearningAnalysisWorker, SnoozeWorker
-└── ExitSenseApplication.kt   Hilt entry point + WorkManager initialiser
-```
-
-### Key design decisions
-
-| Concern | Approach |
-|---|---|
-| No GPS / no location | Wi-Fi SSID + accelerometer + barometer + light sensor + charger state + screen + steps |
-| Architecture | MVVM · Repository · Use-cases |
-| DI | Hilt (SingletonComponent) |
-| DB | Room v3 with explicit migrations |
-| Background | WorkManager periodic (15 min) + optional Foreground Service (30 s poll) |
-| Notification cap | One notification per 24 h **per profile** — Office and Gym each get their own cooldown |
-| Notification timing | Notification only fires when at least one profile is within its scheduled time window (`TimeRuleEvaluator`) |
-| Notification actions | Confirm saves `UserResponse` for every enabled item; Snooze re-shows after the user-configured duration |
-| State | Kotlin StateFlow / SharedFlow throughout |
-| UI | Jetpack Compose + Material 3 (light & dark mode) |
-| Learning | Confirmation-rate → `learnedPriority` multiplier [0.2, 2.0] |
-
----
-
-## Exit Confidence Scoring
-
-Every evaluation combines signals into a confidence score and fires a notification when `score ≥ threshold`.
-
-| Signal | Score | Notes |
-|--------|-------|-------|
-| Home Wi-Fi disconnected | **+50** | Primary exit indicator |
-| Still connected to home Wi-Fi | **−40** | Hard-clamps result ≤ 0 |
-| Outdoor ambient light (≥ 3000 lux) | **+30** | Near-certain exit confirmation |
-| Charger unplugged (within 30 min) | **+25** | Strong pre-departure signal; resets when plugged back in |
-| Walking | +20 | |
-| Running | +20 | |
-| Barometer descent (≥ 0.3 hPa drop) | +20 | ~1 floor change |
-| Driving | +15 | |
-| Steps in last 60 s (≥ 20 steps) | +15 | Rolling window via `TYPE_STEP_DETECTOR` |
-| Screen recently unlocked (< 3 min) | +10 | |
-| Within profile time window | +10 | Tiebreaker |
-
-**Default threshold: 80** — configurable per user in Settings.
-
-Example: *Wi-Fi off (+50) + Walking (+20) + Charger unplugged (+25) = **95** → notification fires.*
-
-Example: *Outdoor light (+30) + Wi-Fi off (+50) + Schedule (+10) = **90** → notification fires.*
-
----
-
-## Database Schema
-
-Room v3 with schema export (`app/schemas/`).
-
-| Table | Purpose |
-|-------|---------|
-| `reminder_profiles` | Name, schedule type, active days, time window, per-profile notification timestamp |
-| `reminder_items` | Checklist items per profile + `learnedPriority` multiplier |
-| `exit_events` | Timestamp, confidence score, triggered signals (JSON) |
-| `user_responses` | Per-item confirm/dismiss, used by learning system |
-| `sensor_snapshots` | Raw sensor readings for debugging |
-
-**Migration 1 → 2:** adds `learnedPriority REAL NOT NULL DEFAULT 1.0` to `reminder_items`.
-
-**Migration 2 → 3:** adds `lastNotifiedAt INTEGER NOT NULL DEFAULT 0` to `reminder_profiles` for per-profile notification cooldown.
+1. **Wi-Fi** — connect to your home Wi-Fi and tap *Use This Network*, or type the name manually
+2. **Floor** — pick your home floor so the barometer can track descent (skipped if no barometer)
+3. **Profile** — create a first checklist profile (an Office starter is provided)
+4. **Permissions** — Activity Recognition, Notifications, Battery Optimization
 
 ---
 
@@ -254,57 +178,142 @@ Room v3 with schema export (`app/schemas/`).
 
 | Permission | Purpose | Required? |
 |---|---|---|
-| `ACCESS_WIFI_STATE` | Detect Wi-Fi connect/disconnect | Yes |
-| `ACCESS_NETWORK_STATE` | `ConnectivityManager.NetworkCallback` | Yes |
-| `ACTIVITY_RECOGNITION` | Walking/running/driving detection | Optional |
-| `POST_NOTIFICATIONS` | Show exit reminders (Android 13+) | Yes |
-| `FOREGROUND_SERVICE` | Continuous monitoring | Yes |
-| `RECEIVE_BOOT_COMPLETED` | Re-schedule workers after reboot | Yes |
-| `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` | Keep background detection reliable | Recommended |
-| `ACCESS_FINE_LOCATION` | **NOT requested** | — |
+| `ACCESS_WIFI_STATE` | Detect Wi-Fi connect / disconnect events | Yes |
+| `ACCESS_NETWORK_STATE` | Network state callbacks | Yes |
+| `NEARBY_WIFI_DEVICES` | Read Wi-Fi network ID on Android 13+ without location | Yes |
+| `FOREGROUND_SERVICE` + `FOREGROUND_SERVICE_SPECIAL_USE` | Run the monitoring service | Yes |
+| `RECEIVE_BOOT_COMPLETED` | Re-schedule background work after reboot | Yes |
+| `WAKE_LOCK` | Keep the sensor job alive briefly | Yes |
+| `POST_NOTIFICATIONS` | Show exit reminder notifications (Android 13+) | Yes |
+| `ACTIVITY_RECOGNITION` | Walking / running / driving detection | Optional |
+| `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` | Prevent the system from killing background work | Recommended |
+| `INTERNET` | Fetch weather from Open-Meteo | Optional (Weather only) |
+| `ACCESS_FINE_LOCATION` | Read Wi-Fi SSID on Android 9+ · Fetch local weather | Optional |
+| `READ_CALENDAR` | Read upcoming calendar events | Optional (Calendar only) |
 
-> On Android 9+ the SSID may appear as `<unknown ssid>` without location permission.
-> The app handles this gracefully — Wi-Fi *disconnect events* still fire and contribute
-> their +50 score regardless of SSID visibility.
+> No data ever leaves your device except for the optional weather request to Open-Meteo (which only sends your GPS coordinates, nothing personal).
 
 ---
 
-## Testing
+## Architecture
 
-```bash
-# Run all unit tests
-./gradlew test
-
-# Run a specific test class
-./gradlew test --tests "com.exitsense.app.rules.ExitDetectorTest"
-
-# HTML report (opens in browser)
-open app/build/reports/tests/testDebugUnitTest/index.html
+```
+app/src/main/java/com/exitsense/app/
+├── data/
+│   ├── local/
+│   │   ├── dao/           5 Room DAOs
+│   │   ├── database/      AppDatabase (Room, version 1)
+│   │   ├── entities/      5 table entities
+│   │   └── mapper/        Entity ↔ Domain converters
+│   ├── preferences/       DataStore — all user settings
+│   └── repository/        5 implementations (Reminder, ExitEvent,
+│                          Learning, Calendar, Weather)
+├── di/                    Hilt modules (Database, Repository, Sensor,
+│                          Notification, Qualifiers)
+├── domain/
+│   ├── model/             Pure Kotlin models (no Android imports)
+│   ├── repository/        Interfaces for use-cases and ViewModels
+│   └── usecase/           6 use-cases
+├── notifications/         ExitNotificationManager · NotificationActionReceiver
+├── presentation/
+│   ├── components/        Shared Compose components
+│   ├── history/           History screen + ViewModel
+│   ├── home/              Home dashboard + ViewModel
+│   ├── integrations/      Weather + Calendar screen + ViewModel
+│   ├── navigation/        NavGraph + Screen routes
+│   ├── profiles/          Profiles list · Add/Edit screen + ViewModels
+│   ├── settings/          Settings screen + ViewModel
+│   ├── setup/             4-step Setup Wizard + ViewModel
+│   └── theme/             Material 3 — Color, Type, Theme (light + dark)
+├── receivers/             BootReceiver (re-schedules workers on boot)
+├── rules/
+│   ├── impl/              ExitDetectorImpl — confidence scoring engine
+│   ├── ExitDetector.kt    Interface (injectable, mockable in tests)
+│   ├── SignalWeight.kt    Per-signal weights + DEFAULT_EXIT_THRESHOLD
+│   └── TimeRuleEvaluator.kt
+├── sensors/               7 provider interfaces + implementations
+│   │                      Motion · WiFi · Pressure · Screen ·
+│   │                      Steps · Charger · Ambient Light
+├── service/               ExitMonitoringService (foreground, 2 s debounce)
+├── workers/               ExitDetectionWorker (15 min)
+│                          LearningAnalysisWorker (daily, on charge)
+│                          SnoozeWorker (one-shot)
+└── ExitSenseApplication.kt   Hilt entry point + WorkManager init
 ```
 
-| Test suite | Tests | Coverage area |
-|---|---|---|
-| `ExitDetectorTest` | 7 | Scoring, threshold, at-home suppression, barometer |
-| `TimeRuleEvaluatorTest` | 9 | Schedule matching, day logic, overnight windows |
-| `SaveProfileUseCaseTest` | 4 | Create vs update, validation errors |
+**Stack:** Kotlin · Jetpack Compose · Material 3 · Hilt · Room · WorkManager · DataStore · Kotlin Coroutines + Flow
+
+---
+
+## Database
+
+Five tables, all local, no sync.
+
+| Table | Stores |
+|---|---|
+| `reminder_profiles` | Profile name, schedule, time window, last-notified timestamp |
+| `reminder_items` | Checklist items per profile + learned priority multiplier |
+| `exit_events` | Timestamp, confidence score, triggered signals (JSON), profile FK |
+| `user_responses` | Per-item confirm/dismiss, used by the learning system |
+| `sensor_snapshots` | Raw sensor readings (kept 30 days, then pruned automatically) |
+
+---
+
+## Tests
+
+```bash
+./gradlew test
+
+# Single suite
+./gradlew test --tests "com.exitsense.app.rules.ExitDetectorTest"
+```
+
+| Suite | Tests | Covers |
+|---|---:|---|
+| `ExitDetectorTest` | 11 | Scoring, threshold, at-home suppression, barometer, networkId paths, multi-set |
+| `TimeRuleEvaluatorTest` | 9 | Schedule matching, custom days, overnight windows |
+| `LearningRepositoryTest` | 5 | Priority formula (floor, cap, midpoint, null-skip, multi-item) |
+| `RecordUserResponseUseCaseTest` | 3 | Normal chain, missing event short-circuit, empty responses |
+| `GetItemRecommendationsUseCaseTest` | 3 | Sort by effective priority, disabled-item filter, learned multiplier |
+| `ReminderModelTest` | 3 | effectivePriority, notifiableItems filter, notifiableItems sort |
+| `SaveProfileUseCaseTest` | 4 | Create vs update, validation |
 | `HomeViewModelTest` | 3 | StateFlow emission, sensor changes, manual detection |
-| `MapperTest` | 7 | Entity↔Domain round-trips, malformed data handling |
-| **Total** | **30** | All passing |
+| `MapperTest` | 7 | Entity ↔ Domain round-trips, malformed data |
+| **Total** | **48** | All passing |
+
+---
+
+## Release signing
+
+In Android Studio: **Build → Generate Signed Bundle / APK → APK**.
+
+Via Gradle, add to `app/build.gradle.kts`:
+
+```kotlin
+signingConfigs {
+    create("release") {
+        storeFile = file("keystore.jks")
+        storePassword = System.getenv("STORE_PASSWORD")
+        keyAlias = "your-alias"
+        keyPassword = System.getenv("KEY_PASSWORD")
+    }
+}
+buildTypes {
+    release { signingConfig = signingConfigs.getByName("release") }
+}
+```
 
 ---
 
 ## Troubleshooting
 
-| Symptom | Fix |
+| Problem | Fix |
 |---|---|
-| `jlink non-zero exit value` | Wrong JDK. Set `JAVA_HOME` to Android Studio's JDK 21 (see above). |
+| Build fails with `jlink non-zero exit value` | Set `JAVA_HOME` to Android Studio's JDK 21 (see above) |
 | `SDK location not found` | Create `local.properties` with `sdk.dir=/path/to/Android/sdk` |
-| `Installed platform not found android-36` | Open SDK Manager → install **Android 16 (API 36)** platform |
-| Gradle sync stuck / fails with 401 | Check proxy settings in Android Studio |
-| `@HiltAndroidApp` not found | Run `./gradlew clean` then re-sync |
-| SSID shows `<unknown ssid>` | Normal on Android 9+. Users type their home SSID manually in setup. |
-| No notification despite exit detected | Check that the current time falls within at least one active profile's scheduled window. |
-| Notification fires outside work hours | Ensure the profile's start/end time is correct in the Profiles screen. |
-| Background detection stops after a few hours | Grant Battery Optimization exemption in Setup step 4 or System Settings → Battery. |
-| Pressure/light row missing from Live Sensors card | Sensor hardware not present on this device or emulator. |
-| Got two notifications for same exit | Each profile has its own 24 h cooldown — check if multiple profiles matched the same event. |
+| `Installed platform not found android-36` | SDK Manager → install **Android 16 (API 36)** |
+| SSID shows `<unknown ssid>` | Normal on Android 9+ without Location. Grant it or use networkId matching — both work |
+| No notification even though exit is detected | The current time must fall inside an active profile's scheduled window |
+| Notifications stopped after a few hours | Grant Battery Optimization exemption: Settings → Apps → ExitSense → Battery → Unrestricted |
+| Barometer or light row missing from Home | Hardware not present on this device — those signals are silently skipped |
+| Two notifications for the same exit | Each profile has its own 24 h cooldown — check if multiple profiles matched |

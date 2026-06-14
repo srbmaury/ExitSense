@@ -150,11 +150,11 @@ private fun ProfileCard(
                 }
             }
 
-            // Schedule badges — two chips that wrap on narrow screens
+            // Schedule badges — two chips per row on normal screens
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
-                maxItemsInEachRow = 1
+                maxItemsInEachRow = 2
             ) {
                 AssistChip(
                     onClick = {},

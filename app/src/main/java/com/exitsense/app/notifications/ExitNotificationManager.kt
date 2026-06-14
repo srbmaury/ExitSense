@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import androidx.core.app.NotificationCompat
 import com.exitsense.app.R
 import com.exitsense.app.domain.model.ReminderItem
 import com.exitsense.app.presentation.MainActivity
@@ -23,7 +24,9 @@ class ExitNotificationManager @Inject constructor(
     companion object {
         const val CHANNEL_EXIT_REMINDERS = "exit_reminders"
         const val CHANNEL_MONITORING = "monitoring_service"
-        const val NOTIFICATION_ID_EXIT = 1001
+        // Base for per-profile exit notification IDs — profile IDs are added so concurrent
+        // notifications for different profiles don't cancel each other.
+        private const val NOTIFICATION_ID_EXIT_BASE = 2000
         const val NOTIFICATION_ID_SERVICE = 1002
 
         const val EXTRA_EXIT_EVENT_ID = "exit_event_id"
@@ -60,10 +63,16 @@ class ExitNotificationManager @Inject constructor(
         profileId: Long,
         profileName: String,
         items: List<ReminderItem>,
-        snoozeMinutes: Int
+        snoozeMinutes: Int,
+        weatherAlert: String? = null,
+        upcomingEvents: List<String> = emptyList()
     ) {
+        // Use exitEventId-based request codes so concurrent notifications don't share
+        // PendingIntents and overwrite each other's extras via FLAG_UPDATE_CURRENT.
+        val reqBase = (exitEventId and 0x0FFFFFFF).toInt() * 3
+
         val openIntent = PendingIntent.getActivity(
-            context, 0,
+            context, reqBase,
             Intent(context, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
                 putExtra(EXTRA_EXIT_EVENT_ID, exitEventId)
@@ -73,9 +82,9 @@ class ExitNotificationManager @Inject constructor(
         )
 
         val confirmIntent = PendingIntent.getBroadcast(
-            context, 1,
-            Intent(ACTION_CONFIRM).apply {
-                setPackage(context.packageName)
+            context, reqBase + 1,
+            Intent(context, NotificationActionReceiver::class.java).apply {
+                action = ACTION_CONFIRM
                 putExtra(EXTRA_EXIT_EVENT_ID, exitEventId)
                 putExtra(EXTRA_PROFILE_ID, profileId)
             },
@@ -83,9 +92,9 @@ class ExitNotificationManager @Inject constructor(
         )
 
         val snoozeIntent = PendingIntent.getBroadcast(
-            context, 2,
-            Intent(ACTION_SNOOZE).apply {
-                setPackage(context.packageName)
+            context, reqBase + 2,
+            Intent(context, NotificationActionReceiver::class.java).apply {
+                action = ACTION_SNOOZE
                 putExtra(EXTRA_EXIT_EVENT_ID, exitEventId)
                 putExtra(EXTRA_PROFILE_ID, profileId)
                 putExtra(EXTRA_SNOOZE_MINUTES, snoozeMinutes)
@@ -93,18 +102,21 @@ class ExitNotificationManager @Inject constructor(
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val itemLines = items.take(5).joinToString("\n") { "  ☐  ${it.name}" }
-        val bigText = "Did you take:\n$itemLines"
+        val sb = StringBuilder("Did you take:\n")
+        items.take(5).forEach { sb.append("  ☐  ${it.name}\n") }
+        if (weatherAlert != null) sb.append("\nWeather: $weatherAlert")
+        if (upcomingEvents.isNotEmpty()) sb.append("\nUpcoming: ${upcomingEvents.joinToString(", ")}")
+        val bigText = sb.toString().trimEnd()
 
-        val notification = android.app.Notification.Builder(context, CHANNEL_EXIT_REMINDERS)
+        val notification = NotificationCompat.Builder(context, CHANNEL_EXIT_REMINDERS)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(context.getString(R.string.notification_exit_title))
             .setContentText(profileName)
-            .setStyle(Notification.BigTextStyle().bigText(bigText))
+            .setStyle(NotificationCompat.BigTextStyle().bigText(bigText))
             .setContentIntent(openIntent)
             .setAutoCancel(false)
-            .setPriority(Notification.PRIORITY_HIGH)
-            .setCategory(Notification.CATEGORY_REMINDER)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_REMINDER)
             .addAction(
                 android.R.drawable.checkbox_on_background,
                 context.getString(R.string.notification_exit_action_confirm),
@@ -112,24 +124,34 @@ class ExitNotificationManager @Inject constructor(
             )
             .addAction(
                 android.R.drawable.ic_menu_recent_history,
-                context.getString(R.string.notification_exit_action_snooze)
-                    .replace("again", "in $snoozeMinutes min"),
+                context.getString(R.string.notification_exit_action_snooze, snoozeMinutes),
                 snoozeIntent
             )
             .build()
 
-        notificationManager.notify(NOTIFICATION_ID_EXIT, notification)
+        val notifId = NOTIFICATION_ID_EXIT_BASE + (profileId and 0xFFFF).toInt()
+        notificationManager.notify(notifId, notification)
     }
 
-    fun buildServiceNotification(): Notification =
-        Notification.Builder(context, CHANNEL_MONITORING)
+    fun buildServiceNotification(): Notification {
+        val openIntent = PendingIntent.getActivity(
+            context, 0,
+            Intent(context, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        return NotificationCompat.Builder(context, CHANNEL_MONITORING)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(context.getString(R.string.service_notification_title))
             .setContentText(context.getString(R.string.service_notification_text))
+            .setContentIntent(openIntent)
             .setOngoing(true)
             .build()
+    }
 
-    fun dismissExitReminder() {
-        notificationManager.cancel(NOTIFICATION_ID_EXIT)
+    fun dismissExitReminder(profileId: Long) {
+        val notifId = NOTIFICATION_ID_EXIT_BASE + (profileId and 0xFFFF).toInt()
+        notificationManager.cancel(notifId)
     }
 }

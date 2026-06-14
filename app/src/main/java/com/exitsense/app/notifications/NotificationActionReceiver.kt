@@ -3,15 +3,18 @@ package com.exitsense.app.notifications
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import androidx.work.*
+import androidx.work.ExistingWorkPolicy
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
+import androidx.work.workDataOf
 import com.exitsense.app.domain.model.UserResponse
 import com.exitsense.app.domain.repository.ReminderRepository
 import com.exitsense.app.domain.usecase.RecordUserResponseUseCase
 import com.exitsense.app.workers.SnoozeWorker
+import com.exitsense.app.di.ApplicationScope
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
@@ -22,6 +25,7 @@ class NotificationActionReceiver : BroadcastReceiver() {
     @Inject lateinit var notificationManager: ExitNotificationManager
     @Inject lateinit var reminderRepository: ReminderRepository
     @Inject lateinit var recordUserResponse: RecordUserResponseUseCase
+    @Inject @ApplicationScope lateinit var applicationScope: CoroutineScope
 
     override fun onReceive(context: Context, intent: Intent) {
         val exitEventId = intent.getLongExtra(ExitNotificationManager.EXTRA_EXIT_EVENT_ID, -1L)
@@ -29,10 +33,10 @@ class NotificationActionReceiver : BroadcastReceiver() {
 
         when (intent.action) {
             ExitNotificationManager.ACTION_CONFIRM -> {
-                notificationManager.dismissExitReminder()
                 if (exitEventId == -1L || profileId == -1L) return
+                notificationManager.dismissExitReminder(profileId)
                 val pendingResult = goAsync()
-                CoroutineScope(Dispatchers.IO + SupervisorJob()).launch {
+                applicationScope.launch(Dispatchers.IO) {
                     try {
                         val profile = reminderRepository.getProfileById(profileId) ?: return@launch
                         val responses = profile.items
@@ -54,7 +58,8 @@ class NotificationActionReceiver : BroadcastReceiver() {
                 }
             }
             ExitNotificationManager.ACTION_SNOOZE -> {
-                notificationManager.dismissExitReminder()
+                if (exitEventId == -1L || profileId == -1L) return
+                notificationManager.dismissExitReminder(profileId)
                 val snoozeMinutes = intent.getIntExtra(ExitNotificationManager.EXTRA_SNOOZE_MINUTES, 5)
                 val snoozeWork = OneTimeWorkRequestBuilder<SnoozeWorker>()
                     .setInitialDelay(snoozeMinutes.toLong(), TimeUnit.MINUTES)
@@ -66,7 +71,11 @@ class NotificationActionReceiver : BroadcastReceiver() {
                     )
                     .addTag(SnoozeWorker.TAG)
                     .build()
-                WorkManager.getInstance(context).enqueue(snoozeWork)
+                WorkManager.getInstance(context).enqueueUniqueWork(
+                    "snooze_$exitEventId",
+                    ExistingWorkPolicy.KEEP,
+                    snoozeWork
+                )
             }
         }
     }

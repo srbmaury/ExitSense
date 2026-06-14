@@ -17,9 +17,12 @@ import com.exitsense.app.sensors.PressureProvider
 import com.exitsense.app.sensors.ScreenStateProvider
 import com.exitsense.app.sensors.StepCountProvider
 import com.exitsense.app.sensors.WifiProvider
+import android.content.pm.ServiceInfo
+import android.os.Build
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.*
-import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.*
+import java.util.Calendar
 import javax.inject.Inject
 
 /**
@@ -44,12 +47,12 @@ class ExitMonitoringService : Service() {
     @Inject lateinit var notificationManager: ExitNotificationManager
 
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+    private var monitoringJob: Job? = null
 
     companion object {
         const val ACTION_START = "com.exitsense.app.START_MONITORING"
         const val ACTION_STOP = "com.exitsense.app.STOP_MONITORING"
-        private const val POLL_INTERVAL_MS = 30_000L
-        private const val COOLDOWN_MS = 24 * 60 * 60 * 1000L // one notification per day
+        private const val COOLDOWN_MS = 24 * 60 * 60 * 1000L
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -57,21 +60,31 @@ class ExitMonitoringService : Service() {
     override fun onCreate() {
         super.onCreate()
         notificationManager.createChannels()
-        startForeground(
-            ExitNotificationManager.NOTIFICATION_ID_SERVICE,
-            notificationManager.buildServiceNotification()
-        )
+        val notification = notificationManager.buildServiceNotification()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(
+                ExitNotificationManager.NOTIFICATION_ID_SERVICE,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+            )
+        } else {
+            startForeground(ExitNotificationManager.NOTIFICATION_ID_SERVICE, notification)
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
-            ACTION_STOP -> stopSelf()
-            else -> startMonitoring()
+        if (intent?.action == ACTION_STOP) {
+            stopSelf()
+            return START_NOT_STICKY
         }
+        startMonitoring()
         return START_STICKY
     }
 
+    @OptIn(FlowPreview::class)
     private fun startMonitoring() {
+        if (monitoringJob?.isActive == true) return
+
         motionProvider.startMonitoring()
         wifiProvider.startMonitoring()
         pressureProvider.startMonitoring()
@@ -80,17 +93,40 @@ class ExitMonitoringService : Service() {
         chargerStateProvider.startMonitoring()
         ambientLightProvider.startMonitoring()
 
-        scope.launch {
-            while (isActive) {
-                evaluateAndNotify()
-                delay(POLL_INTERVAL_MS)
-            }
-        }
+        // React to score-affecting changes only — wrap high-frequency sensor flows so
+        // continuous lux/pressure/step readings don't prevent the debounce from firing.
+        combine(
+            combine(
+                motionProvider.currentMotion,
+                wifiProvider.wifiState,
+                screenStateProvider.recentlyUnlocked,
+                pressureProvider.pressureData.map { it.isDescending }.distinctUntilChanged(),
+                stepCountProvider.stepData.map { it.stepsLastMinute >= 20 }.distinctUntilChanged()
+            ) { _, _, _, _, _ -> Unit },
+            combine(
+                chargerStateProvider.chargerData,
+                ambientLightProvider.lightData.map { it.isOutdoor }.distinctUntilChanged()
+            ) { _, _ -> Unit }
+        ) { _, _ -> Unit }
+            .debounce(2_000L)
+            .onEach { evaluateAndNotify() }
+            .also { monitoringJob = it.launchIn(scope) }
+    }
+
+    private fun isInQuietHours(prefs: com.exitsense.app.domain.model.UserPreferences): Boolean {
+        if (!prefs.quietHoursEnabled) return false
+        val cal = Calendar.getInstance()
+        val nowMinute = cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE)
+        val start = prefs.quietHoursStartMinute
+        val end = prefs.quietHoursEndMinute
+        return if (start > end) nowMinute >= start || nowMinute < end
+               else nowMinute >= start && nowMinute < end
     }
 
     private suspend fun evaluateAndNotify() {
         val prefs = preferencesDataStore.userPreferences.first()
         if (!prefs.isSetupComplete || !prefs.notificationsEnabled) return
+        if (isInQuietHours(prefs)) return
 
         val now = System.currentTimeMillis()
         val activeProfiles = reminderRepository.getActiveProfiles().first()
@@ -99,6 +135,7 @@ class ExitMonitoringService : Service() {
         val result = exitDetector.evaluate(
             activeProfiles = activeProfiles,
             homeWifiSsid = prefs.homeWifiSsid,
+            homeNetworkIds = prefs.homeNetworkIds,
             threshold = prefs.exitConfidenceThreshold
         )
 
@@ -119,8 +156,7 @@ class ExitMonitoringService : Service() {
                 exitEventId = eventId,
                 profileId = profile.id,
                 profileName = profile.name,
-                items = profile.items.filter { it.isEnabled }
-                    .sortedByDescending { it.effectivePriority },
+                items = profile.notifiableItems(),
                 snoozeMinutes = prefs.reminderSnoozeMinutes
             )
         }
