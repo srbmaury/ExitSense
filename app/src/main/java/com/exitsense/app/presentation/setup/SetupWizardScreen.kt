@@ -72,19 +72,8 @@ fun SetupWizardScreen(
                 .padding(padding)
                 .padding(horizontal = 24.dp)
         ) {
-            // Progress indicator
             Spacer(Modifier.height(16.dp))
             SetupProgressBar(currentStep = state.currentStep, visibleSteps = visibleSteps)
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End
-            ) {
-                TextButton(onClick = { importLauncher.launch(arrayOf("application/json", "text/plain")) }) {
-                    Icon(Icons.Default.Download, null, Modifier.size(16.dp))
-                    Spacer(Modifier.width(4.dp))
-                    Text("Import Backup")
-                }
-            }
             Spacer(Modifier.height(24.dp))
 
             val totalSteps = visibleSteps.size
@@ -92,15 +81,6 @@ fun SetupWizardScreen(
 
             Box(modifier = Modifier.weight(1f)) {
                 when (state.currentStep) {
-                    SetupStep.WIFI -> WifiSetupStep(
-                        ssid = state.homeWifiSsid,
-                        detectedSsid = state.detectedSsid,
-                        availableNetworks = state.availableNetworks,
-                        stepLabel = "Step $stepNum of $totalSteps",
-                        onSsidChanged = viewModel::onWifiSsidChanged,
-                        onUseDetected = viewModel::useDetectedSsid,
-                        onScanClicked = viewModel::triggerScan
-                    )
                     SetupStep.FLOOR -> FloorSetupStep(
                         selectedFloor = state.homeFloor,
                         stepLabel = "Step $stepNum of $totalSteps",
@@ -108,13 +88,32 @@ fun SetupWizardScreen(
                     )
                     SetupStep.PROFILES -> ProfilesSetupStep(
                         stepLabel = "Step $stepNum of $totalSteps",
-                        onCreateOfficeProfile = viewModel::createDefaultOfficeProfile
+                        onCreateOfficeProfile = viewModel::createDefaultOfficeProfile,
+                        onSkip = viewModel::nextStep
                     )
                     SetupStep.PERMISSIONS -> PermissionsSetupStep(stepLabel = "Step $stepNum of $totalSteps")
+                    SetupStep.WIFI -> WifiSetupStep(
+                        ssid = state.homeWifiSsid,
+                        detectedSsid = state.detectedSsid,
+                        availableNetworks = state.availableNetworks,
+                        stepLabel = "Step $stepNum of $totalSteps",
+                        isScanning = state.isScanningNetworks,
+                        onSsidChanged = viewModel::onWifiSsidChanged,
+                        onUseDetected = viewModel::useDetectedSsid,
+                        onScanClicked = viewModel::triggerScan
+                    )
                 }
             }
 
-            Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(12.dp))
+
+            // Prominent import card on the first step only.
+            if (state.currentStep == visibleSteps.first()) {
+                ImportBackupCard(onClick = {
+                    importLauncher.launch(arrayOf("application/json", "text/plain"))
+                })
+                Spacer(Modifier.height(12.dp))
+            }
 
             // Navigation buttons
             Row(
@@ -169,6 +168,45 @@ private fun SetupProgressBar(currentStep: SetupStep, visibleSteps: List<SetupSte
     }
 }
 
+@Composable
+private fun ImportBackupCard(onClick: () -> Unit) {
+    Card(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.secondaryContainer
+        )
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                Icons.Default.Download, null,
+                tint = MaterialTheme.colorScheme.onSecondaryContainer
+            )
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "Transferring from another device?",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                )
+                Text(
+                    "Import a backup to restore your profiles and settings.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.75f)
+                )
+            }
+            Icon(
+                Icons.Default.ChevronRight, null,
+                tint = MaterialTheme.colorScheme.onSecondaryContainer
+            )
+        }
+    }
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun WifiSetupStep(
@@ -176,6 +214,7 @@ private fun WifiSetupStep(
     detectedSsid: String?,
     availableNetworks: List<String>,
     stepLabel: String,
+    isScanning: Boolean,
     onSsidChanged: (String) -> Unit,
     onUseDetected: () -> Unit,
     onScanClicked: () -> Unit
@@ -203,11 +242,21 @@ private fun WifiSetupStep(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        if (availableNetworks.isEmpty()) "Visible Networks" else "Visible Networks (${availableNetworks.size})",
+                        if (availableNetworks.isEmpty()) "Visible Networks"
+                        else "Visible Networks (${availableNetworks.size})",
                         style = MaterialTheme.typography.labelLarge
                     )
-                    IconButton(onClick = onScanClicked) {
-                        Icon(Icons.Default.Refresh, "Scan again", Modifier.size(20.dp))
+                    if (isScanning) {
+                        CircularProgressIndicator(
+                            modifier = Modifier
+                                .size(20.dp)
+                                .padding(2.dp),
+                            strokeWidth = 2.dp
+                        )
+                    } else {
+                        IconButton(onClick = onScanClicked) {
+                            Icon(Icons.Default.Refresh, "Scan again", Modifier.size(20.dp))
+                        }
                     }
                 }
 
@@ -227,7 +276,6 @@ private fun WifiSetupStep(
                             FilterChip(
                                 selected = isSelected,
                                 onClick = {
-                                    // Toggle: add or remove this network from the comma list
                                     val current = ssid.split(",")
                                         .map { it.trim() }.filter { it.isNotEmpty() }.toMutableList()
                                     if (isSelected) current.remove(network) else current.add(network)
@@ -240,6 +288,11 @@ private fun WifiSetupStep(
                             )
                         }
                     }
+                    Text(
+                        "Tap to select. Choose all bands for your network (e.g. 2.4 GHz and 5 GHz).",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
 
                 // Highlight currently connected network if it didn't appear in scan results
@@ -342,7 +395,11 @@ private fun FloorSetupStep(selectedFloor: Int, stepLabel: String, onFloorChanged
 }
 
 @Composable
-private fun ProfilesSetupStep(stepLabel: String, onCreateOfficeProfile: () -> Unit) {
+private fun ProfilesSetupStep(
+    stepLabel: String,
+    onCreateOfficeProfile: () -> Unit,
+    onSkip: () -> Unit
+) {
     var created by remember { mutableStateOf(false) }
     Column(
         modifier = Modifier.verticalScroll(rememberScrollState()),
@@ -382,6 +439,12 @@ private fun ProfilesSetupStep(stepLabel: String, onCreateOfficeProfile: () -> Un
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+        TextButton(
+            onClick = onSkip,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Skip for now")
+        }
     }
 }
 
@@ -436,6 +499,18 @@ private fun PermissionsSetupStep(stepLabel: String) {
         batteryGranted = pm.isIgnoringBatteryOptimizations(context.packageName)
     }
 
+    // Count only the visible permission cards.
+    val totalCount = 2 +
+        (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) 1 else 0) +
+        (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) 1 else 0)
+    val grantedCount = listOf(
+        activityGranted,
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && notifyGranted,
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && wifiNameGranted,
+        batteryGranted
+    ).count { it }
+    val allGranted = grantedCount == totalCount
+
     Column(
         modifier = Modifier.verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(16.dp)
@@ -446,6 +521,32 @@ private fun PermissionsSetupStep(stepLabel: String) {
             title = "Grant Permissions",
             subtitle = "These permissions enable motion detection, notifications, and Wi-Fi name matching."
         )
+
+        // Progress tally chip
+        Surface(
+            shape = MaterialTheme.shapes.small,
+            color = if (allGranted) ConfidenceHigh.copy(alpha = 0.12f)
+                    else MaterialTheme.colorScheme.surfaceVariant,
+            modifier = Modifier.align(Alignment.CenterHorizontally)
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Icon(
+                    if (allGranted) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
+                    null,
+                    Modifier.size(14.dp),
+                    tint = if (allGranted) ConfidenceHigh else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    "$grantedCount of $totalCount granted",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (allGranted) ConfidenceHigh else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
 
         PermissionCard(
             icon = Icons.Default.DirectionsWalk,
@@ -577,27 +678,6 @@ private fun StepHeader(
 
 // ── Previews ─────────────────────────────────────────────────────────────────
 
-@Preview(name = "Setup — step 4 Wi-Fi", showBackground = true, device = Devices.PIXEL_5)
-@Composable
-private fun PreviewSetupWifiStep() {
-    ExitSenseTheme {
-        Scaffold { padding ->
-            Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 24.dp)) {
-                Spacer(Modifier.height(16.dp))
-                SetupProgressBar(currentStep = SetupStep.WIFI, visibleSteps = SetupStep.entries)
-                Spacer(Modifier.height(24.dp))
-                Box(Modifier.weight(1f)) {
-                    WifiSetupStep(ssid = "", detectedSsid = "HomeNetwork_5G", availableNetworks = listOf("HomeNetwork_5G", "HomeNetwork_2G", "Neighbor"), stepLabel = "Step 4 of 4", onSsidChanged = {}, onUseDetected = {}, onScanClicked = {})
-                }
-                Row(Modifier.fillMaxWidth().padding(bottom = 24.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    OutlinedButton(onClick = {}, Modifier.weight(1f)) { Text("Back") }
-                    Button(onClick = {}, Modifier.weight(1f)) { Text("Get Started") }
-                }
-            }
-        }
-    }
-}
-
 @Preview(name = "Setup — step 1 Floor", showBackground = true, device = Devices.PIXEL_5)
 @Composable
 private fun PreviewSetupFloorStep() {
@@ -610,9 +690,11 @@ private fun PreviewSetupFloorStep() {
                 Box(Modifier.weight(1f)) {
                     FloorSetupStep(selectedFloor = 3, stepLabel = "Step 1 of 4", onFloorChanged = {})
                 }
-                Row(Modifier.fillMaxWidth().padding(bottom = 24.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    OutlinedButton(onClick = {}, Modifier.weight(1f)) { Text("Back") }
-                    Button(onClick = {}, Modifier.weight(1f)) { Text("Next") }
+                Spacer(Modifier.height(12.dp))
+                ImportBackupCard(onClick = {})
+                Spacer(Modifier.height(12.dp))
+                Row(Modifier.fillMaxWidth().padding(bottom = 24.dp)) {
+                    Button(onClick = {}, Modifier.fillMaxWidth()) { Text("Next") }
                 }
             }
         }
@@ -629,7 +711,7 @@ private fun PreviewSetupProfilesStep() {
                 SetupProgressBar(currentStep = SetupStep.PROFILES, visibleSteps = SetupStep.entries)
                 Spacer(Modifier.height(24.dp))
                 Box(Modifier.weight(1f)) {
-                    ProfilesSetupStep(stepLabel = "Step 2 of 4", onCreateOfficeProfile = {})
+                    ProfilesSetupStep(stepLabel = "Step 2 of 4", onCreateOfficeProfile = {}, onSkip = {})
                 }
                 Row(Modifier.fillMaxWidth().padding(bottom = 24.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     OutlinedButton(onClick = {}, Modifier.weight(1f)) { Text("Back") }
@@ -655,6 +737,36 @@ private fun PreviewSetupPermissionsStep() {
                 Row(Modifier.fillMaxWidth().padding(bottom = 24.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     OutlinedButton(onClick = {}, Modifier.weight(1f)) { Text("Back") }
                     Button(onClick = {}, Modifier.weight(1f)) { Text("Next") }
+                }
+            }
+        }
+    }
+}
+
+@Preview(name = "Setup — step 4 Wi-Fi", showBackground = true, device = Devices.PIXEL_5)
+@Composable
+private fun PreviewSetupWifiStep() {
+    ExitSenseTheme {
+        Scaffold { padding ->
+            Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 24.dp)) {
+                Spacer(Modifier.height(16.dp))
+                SetupProgressBar(currentStep = SetupStep.WIFI, visibleSteps = SetupStep.entries)
+                Spacer(Modifier.height(24.dp))
+                Box(Modifier.weight(1f)) {
+                    WifiSetupStep(
+                        ssid = "HomeNetwork_5G",
+                        detectedSsid = "HomeNetwork_5G",
+                        availableNetworks = listOf("HomeNetwork_5G", "HomeNetwork_2G", "Neighbor"),
+                        stepLabel = "Step 4 of 4",
+                        isScanning = false,
+                        onSsidChanged = {},
+                        onUseDetected = {},
+                        onScanClicked = {}
+                    )
+                }
+                Row(Modifier.fillMaxWidth().padding(bottom = 24.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    OutlinedButton(onClick = {}, Modifier.weight(1f)) { Text("Back") }
+                    Button(onClick = {}, Modifier.weight(1f)) { Text("Get Started") }
                 }
             }
         }

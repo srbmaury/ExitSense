@@ -13,6 +13,8 @@ import com.exitsense.app.domain.usecase.ImportBackupUseCase
 import com.exitsense.app.sensors.PressureProvider
 import com.exitsense.app.sensors.WifiProvider
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -32,7 +34,8 @@ data class SetupUiState(
     val hasBarometer: Boolean = true,
     val wifiSsidError: Boolean = false,
     val importMessage: String? = null,
-    val availableNetworks: List<String> = emptyList()
+    val availableNetworks: List<String> = emptyList(),
+    val isScanningNetworks: Boolean = false
 )
 
 @HiltViewModel
@@ -52,19 +55,31 @@ class SetupWizardViewModel @Inject constructor(
     ))
     val uiState: StateFlow<SetupUiState> = _uiState.asStateFlow()
 
+    private var scanTimeoutJob: Job? = null
+
     init {
         wifiProvider.startMonitoring()
         wifiProvider.refresh()
         viewModelScope.launch {
             wifiProvider.wifiState.collect { wifi ->
-                _uiState.update {
-                    it.copy(detectedSsid = wifi.ssid, detectedNetworkId = wifi.networkId)
+                _uiState.update { state ->
+                    // Auto-fill the SSID field the moment we detect the connected network,
+                    // but only if we're on the WiFi step and the user hasn't typed anything yet.
+                    val shouldAutoFill = state.currentStep == SetupStep.WIFI &&
+                        state.homeWifiSsid.isBlank() &&
+                        wifi.ssid != null
+                    state.copy(
+                        detectedSsid = wifi.ssid,
+                        detectedNetworkId = wifi.networkId,
+                        homeWifiSsid = if (shouldAutoFill) wifi.ssid!! else state.homeWifiSsid
+                    )
                 }
             }
         }
         viewModelScope.launch {
             wifiProvider.scanResults.collect { ssids ->
-                _uiState.update { it.copy(availableNetworks = ssids) }
+                _uiState.update { it.copy(availableNetworks = ssids, isScanningNetworks = false) }
+                scanTimeoutJob?.cancel()
             }
         }
         wifiProvider.triggerScan()
@@ -77,7 +92,18 @@ class SetupWizardViewModel @Inject constructor(
 
     fun onWifiSsidChanged(ssid: String) = _uiState.update { it.copy(homeWifiSsid = ssid, wifiSsidError = false) }
     fun onFloorChanged(floor: Int) = _uiState.update { it.copy(homeFloor = floor) }
-    fun triggerScan() { wifiProvider.triggerScan() }
+
+    fun triggerScan() = startScan()
+
+    private fun startScan() {
+        _uiState.update { it.copy(isScanningNetworks = true) }
+        wifiProvider.triggerScan()
+        scanTimeoutJob?.cancel()
+        scanTimeoutJob = viewModelScope.launch {
+            delay(5_000L)
+            _uiState.update { it.copy(isScanningNetworks = false) }
+        }
+    }
 
     fun useDetectedSsid() {
         _uiState.update { it.copy(homeWifiSsid = it.detectedSsid ?: "") }
@@ -86,13 +112,18 @@ class SetupWizardViewModel @Inject constructor(
     fun goToStep(step: SetupStep) = _uiState.update { it.copy(currentStep = step) }
 
     fun nextStep() {
-        val next = when (_uiState.value.currentStep) {
+        val state = _uiState.value
+        val next = when (state.currentStep) {
             SetupStep.FLOOR -> SetupStep.PROFILES
             SetupStep.PROFILES -> SetupStep.PERMISSIONS
             SetupStep.PERMISSIONS -> {
-                // Arriving at the WiFi step after permissions are granted — scan now.
+                // Arriving at WiFi step with permissions granted — refresh SSID and scan now.
                 wifiProvider.refresh()
-                wifiProvider.triggerScan()
+                startScan()
+                // Also pre-fill immediately if we already have a detected SSID.
+                if (state.homeWifiSsid.isBlank() && state.detectedSsid != null) {
+                    _uiState.update { it.copy(homeWifiSsid = state.detectedSsid) }
+                }
                 SetupStep.WIFI
             }
             SetupStep.WIFI -> return
