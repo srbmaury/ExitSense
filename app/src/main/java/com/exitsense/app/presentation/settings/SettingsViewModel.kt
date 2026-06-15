@@ -4,10 +4,11 @@ import android.content.Context
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.exitsense.app.data.backup.ProfileBackupManager
+import com.exitsense.app.data.backup.toUserMessage
 import com.exitsense.app.data.preferences.UserPreferencesDataStore
 import com.exitsense.app.domain.model.UserPreferences
-import com.exitsense.app.domain.repository.ReminderRepository
+import com.exitsense.app.domain.usecase.ExportBackupUseCase
+import com.exitsense.app.domain.usecase.ImportBackupUseCase
 import com.exitsense.app.sensors.PressureProvider
 import com.exitsense.app.sensors.WifiProvider
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -33,8 +34,8 @@ class SettingsViewModel @Inject constructor(
     private val dataStore: UserPreferencesDataStore,
     private val wifiProvider: WifiProvider,
     private val pressureProvider: PressureProvider,
-    private val reminderRepository: ReminderRepository,
-    private val backupManager: ProfileBackupManager
+    private val exportBackup: ExportBackupUseCase,
+    private val importBackup: ImportBackupUseCase
 ) : ViewModel() {
 
     private val hasBarometer = pressureProvider.pressureData.value.isAvailable
@@ -118,9 +119,7 @@ class SettingsViewModel @Inject constructor(
 
     fun exportProfiles(uri: Uri) {
         viewModelScope.launch {
-            val prefs = dataStore.userPreferences.first()
-            val profiles = reminderRepository.getAllProfiles().first()
-            backupManager.exportToUri(prefs, profiles, uri)
+            exportBackup(uri)
                 .onSuccess { count ->
                     _exportMessage.value = "Exported $count profile${if (count == 1) "" else "s"} with all settings"
                 }
@@ -130,25 +129,8 @@ class SettingsViewModel @Inject constructor(
 
     fun importProfiles(uri: Uri) {
         viewModelScope.launch {
-            backupManager.importFromUri(uri)
-                .onSuccess { result ->
-                    val p = result.preferences
-                    // Restore all settings (skip operational flags: setup complete, monitoring, last exit)
-                    dataStore.updateHomeWifiSsid(p.homeWifiSsid)
-                    dataStore.restoreHomeNetworkIds(p.homeNetworkIds)
-                    dataStore.updateHomeFloor(p.homeFloor)
-                    dataStore.updateConfidenceThreshold(p.exitConfidenceThreshold)
-                    dataStore.updateSnoozeMinutes(p.reminderSnoozeMinutes)
-                    dataStore.updateQuietHoursEnabled(p.quietHoursEnabled)
-                    dataStore.updateQuietHoursStartMinute(p.quietHoursStartMinute)
-                    dataStore.updateQuietHoursEndMinute(p.quietHoursEndMinute)
-                    dataStore.updateWeatherEnabled(p.weatherEnabled)
-                    dataStore.updateCalendarEnabled(p.calendarEnabled)
-                    // Restore profiles
-                    result.profiles.forEach { reminderRepository.saveProfile(it) }
-                    val profileCount = result.profiles.size
-                    _importMessage.value = "Restored $profileCount profile${if (profileCount == 1) "" else "s"} and all settings"
-                }
+            importBackup(uri)
+                .onSuccess { summary -> _importMessage.value = summary.toUserMessage() }
                 .onFailure { _importMessage.value = "Import failed: ${it.message}" }
         }
     }

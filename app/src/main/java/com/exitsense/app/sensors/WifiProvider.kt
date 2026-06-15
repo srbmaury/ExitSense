@@ -11,7 +11,11 @@ data class WifiState(
 
 interface WifiProvider {
     val wifiState: StateFlow<WifiState>
+    /** SSIDs found by the most recent scan; empty until [triggerScan] is called. */
+    val scanResults: StateFlow<List<String>>
     fun startMonitoring()
     fun stopMonitoring()
     fun refresh()
+    /** Initiates a WiFi scan and updates [scanResults] when complete. */
+    fun triggerScan()
 }

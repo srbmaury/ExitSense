@@ -1,12 +1,15 @@
 package com.exitsense.app.presentation.setup
 
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.exitsense.app.data.backup.toUserMessage
 import com.exitsense.app.data.preferences.UserPreferencesDataStore
 import com.exitsense.app.domain.model.ReminderItem
 import com.exitsense.app.domain.model.ReminderProfile
 import com.exitsense.app.domain.model.ScheduleType
 import com.exitsense.app.domain.repository.ReminderRepository
+import com.exitsense.app.domain.usecase.ImportBackupUseCase
 import com.exitsense.app.sensors.PressureProvider
 import com.exitsense.app.sensors.WifiProvider
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -15,10 +18,11 @@ import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 // FLOOR step is skipped on devices without a barometer — order stays the same, step just isn't shown.
-enum class SetupStep { WIFI, FLOOR, PROFILES, PERMISSIONS }
+// WIFI is last so location permission is already granted when the user reaches it (scan works).
+enum class SetupStep { FLOOR, PROFILES, PERMISSIONS, WIFI }
 
 data class SetupUiState(
-    val currentStep: SetupStep = SetupStep.WIFI,
+    val currentStep: SetupStep = SetupStep.FLOOR,
     val homeWifiSsid: String = "",
     val homeFloor: Int = 0,
     val detectedSsid: String? = null,
@@ -26,7 +30,9 @@ data class SetupUiState(
     val isComplete: Boolean = false,
     val isLoading: Boolean = false,
     val hasBarometer: Boolean = true,
-    val wifiSsidError: Boolean = false
+    val wifiSsidError: Boolean = false,
+    val importMessage: String? = null,
+    val availableNetworks: List<String> = emptyList()
 )
 
 @HiltViewModel
@@ -34,12 +40,16 @@ class SetupWizardViewModel @Inject constructor(
     private val dataStore: UserPreferencesDataStore,
     private val reminderRepository: ReminderRepository,
     private val wifiProvider: WifiProvider,
-    private val pressureProvider: PressureProvider
+    private val pressureProvider: PressureProvider,
+    private val importBackupUseCase: ImportBackupUseCase
 ) : ViewModel() {
 
     private val hasBarometer = pressureProvider.pressureData.value.isAvailable
 
-    private val _uiState = MutableStateFlow(SetupUiState(hasBarometer = hasBarometer))
+    private val _uiState = MutableStateFlow(SetupUiState(
+        hasBarometer = hasBarometer,
+        currentStep = if (hasBarometer) SetupStep.FLOOR else SetupStep.PROFILES
+    ))
     val uiState: StateFlow<SetupUiState> = _uiState.asStateFlow()
 
     init {
@@ -52,6 +62,12 @@ class SetupWizardViewModel @Inject constructor(
                 }
             }
         }
+        viewModelScope.launch {
+            wifiProvider.scanResults.collect { ssids ->
+                _uiState.update { it.copy(availableNetworks = ssids) }
+            }
+        }
+        wifiProvider.triggerScan()
     }
 
     override fun onCleared() {
@@ -61,6 +77,7 @@ class SetupWizardViewModel @Inject constructor(
 
     fun onWifiSsidChanged(ssid: String) = _uiState.update { it.copy(homeWifiSsid = ssid, wifiSsidError = false) }
     fun onFloorChanged(floor: Int) = _uiState.update { it.copy(homeFloor = floor) }
+    fun triggerScan() { wifiProvider.triggerScan() }
 
     fun useDetectedSsid() {
         _uiState.update { it.copy(homeWifiSsid = it.detectedSsid ?: "") }
@@ -69,26 +86,26 @@ class SetupWizardViewModel @Inject constructor(
     fun goToStep(step: SetupStep) = _uiState.update { it.copy(currentStep = step) }
 
     fun nextStep() {
-        val state = _uiState.value
-        if (state.currentStep == SetupStep.WIFI && state.homeWifiSsid.isBlank()) {
-            _uiState.update { it.copy(wifiSsidError = true) }
-            return
-        }
-        val next = when (state.currentStep) {
-            SetupStep.WIFI -> if (hasBarometer) SetupStep.FLOOR else SetupStep.PROFILES
+        val next = when (_uiState.value.currentStep) {
             SetupStep.FLOOR -> SetupStep.PROFILES
             SetupStep.PROFILES -> SetupStep.PERMISSIONS
-            SetupStep.PERMISSIONS -> return
+            SetupStep.PERMISSIONS -> {
+                // Arriving at the WiFi step after permissions are granted — scan now.
+                wifiProvider.refresh()
+                wifiProvider.triggerScan()
+                SetupStep.WIFI
+            }
+            SetupStep.WIFI -> return
         }
         _uiState.update { it.copy(currentStep = next, wifiSsidError = false) }
     }
 
     fun previousStep() {
         val prev = when (_uiState.value.currentStep) {
-            SetupStep.WIFI -> return
-            SetupStep.FLOOR -> SetupStep.WIFI
-            SetupStep.PROFILES -> if (hasBarometer) SetupStep.FLOOR else SetupStep.WIFI
+            SetupStep.FLOOR -> return
+            SetupStep.PROFILES -> if (hasBarometer) SetupStep.FLOOR else return
             SetupStep.PERMISSIONS -> SetupStep.PROFILES
+            SetupStep.WIFI -> SetupStep.PERMISSIONS
         }
         _uiState.update { it.copy(currentStep = prev) }
     }
@@ -124,5 +141,31 @@ class SetupWizardViewModel @Inject constructor(
             dataStore.setSetupComplete(true)
             _uiState.update { it.copy(isComplete = true) }
         }
+    }
+
+    fun importBackup(uri: Uri) {
+        viewModelScope.launch {
+            importBackupUseCase(uri, markSetupComplete = false)
+                .onSuccess { summary ->
+                    val restoredPrefs = dataStore.userPreferences.first()
+                    _uiState.update {
+                        it.copy(
+                            currentStep = SetupStep.PERMISSIONS,
+                            homeWifiSsid = restoredPrefs.homeWifiSsid,
+                            homeFloor = restoredPrefs.homeFloor,
+                            importMessage = "${summary.toUserMessage()} — grant permissions then confirm your Wi-Fi to finish.",
+                            isComplete = false,
+                            wifiSsidError = false
+                        )
+                    }
+                }
+                .onFailure { error ->
+                    _uiState.update { it.copy(importMessage = "Import failed: ${error.message}") }
+                }
+        }
+    }
+
+    fun clearImportMessage() {
+        _uiState.update { it.copy(importMessage = null) }
     }
 }

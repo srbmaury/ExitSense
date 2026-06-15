@@ -73,6 +73,11 @@ class HomeViewModel @Inject constructor(
         notificationManager.createChannels()
         motionProvider.startMonitoring()
         wifiProvider.startMonitoring()
+        // Force a fresh SSID read now that setup permissions may have just been granted.
+        // startMonitoring() early-returns if the singleton was already started (e.g. in the
+        // setup wizard before permissions existed), so the persistent callback may carry a
+        // stale null SSID — refresh() issues a one-shot callback that re-reads it.
+        wifiProvider.refresh()
         screenStateProvider.startMonitoring()
         pressureProvider.startMonitoring()
         stepCountProvider.startMonitoring()

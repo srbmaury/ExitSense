@@ -42,15 +42,30 @@ fun SetupWizardScreen(
     viewModel: SetupWizardViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val snackbarHostState = remember { SnackbarHostState() }
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri -> uri?.let { viewModel.importBackup(it) } }
 
-    LaunchedEffect(state.isComplete) {
-        if (state.isComplete) onSetupComplete()
+    // Keys on both isComplete and importMessage so that if the user clicks "Get Started"
+    // while the import snackbar is still showing, navigation fires once the snackbar clears.
+    LaunchedEffect(state.isComplete, state.importMessage) {
+        if (state.isComplete && state.importMessage == null) onSetupComplete()
+    }
+
+    state.importMessage?.let { msg ->
+        LaunchedEffect(msg) {
+            snackbarHostState.showSnackbar(msg)
+            viewModel.clearImportMessage()
+        }
     }
 
     val visibleSteps = if (state.hasBarometer) SetupStep.entries
                        else SetupStep.entries.filter { it != SetupStep.FLOOR }
 
-    Scaffold { padding ->
+    Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHostState) }
+    ) { padding ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -60,6 +75,16 @@ fun SetupWizardScreen(
             // Progress indicator
             Spacer(Modifier.height(16.dp))
             SetupProgressBar(currentStep = state.currentStep, visibleSteps = visibleSteps)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End
+            ) {
+                TextButton(onClick = { importLauncher.launch(arrayOf("application/json", "text/plain")) }) {
+                    Icon(Icons.Default.Download, null, Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Import Backup")
+                }
+            }
             Spacer(Modifier.height(24.dp))
 
             val totalSteps = visibleSteps.size
@@ -70,10 +95,11 @@ fun SetupWizardScreen(
                     SetupStep.WIFI -> WifiSetupStep(
                         ssid = state.homeWifiSsid,
                         detectedSsid = state.detectedSsid,
+                        availableNetworks = state.availableNetworks,
                         stepLabel = "Step $stepNum of $totalSteps",
-                        isError = state.wifiSsidError,
                         onSsidChanged = viewModel::onWifiSsidChanged,
-                        onUseDetected = viewModel::useDetectedSsid
+                        onUseDetected = viewModel::useDetectedSsid,
+                        onScanClicked = viewModel::triggerScan
                     )
                     SetupStep.FLOOR -> FloorSetupStep(
                         selectedFloor = state.homeFloor,
@@ -97,7 +123,7 @@ fun SetupWizardScreen(
                     .padding(bottom = 24.dp),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                if (state.currentStep != SetupStep.WIFI) {
+                if (state.currentStep != visibleSteps.first()) {
                     OutlinedButton(
                         onClick = viewModel::previousStep,
                         modifier = Modifier.weight(1f)
@@ -106,12 +132,12 @@ fun SetupWizardScreen(
 
                 Button(
                     onClick = {
-                        if (state.currentStep == SetupStep.PERMISSIONS) viewModel.finishSetup()
+                        if (state.currentStep == SetupStep.WIFI) viewModel.finishSetup()
                         else viewModel.nextStep()
                     },
                     modifier = Modifier.weight(1f)
                 ) {
-                    Text(if (state.currentStep == SetupStep.PERMISSIONS) "Get Started" else "Next")
+                    Text(if (state.currentStep == SetupStep.WIFI) "Get Started" else "Next")
                 }
             }
         }
@@ -143,14 +169,16 @@ private fun SetupProgressBar(currentStep: SetupStep, visibleSteps: List<SetupSte
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun WifiSetupStep(
     ssid: String,
     detectedSsid: String?,
+    availableNetworks: List<String>,
     stepLabel: String,
-    isError: Boolean = false,
     onSsidChanged: (String) -> Unit,
-    onUseDetected: () -> Unit
+    onUseDetected: () -> Unit,
+    onScanClicked: () -> Unit
 ) {
     Column(
         modifier = Modifier.verticalScroll(rememberScrollState()),
@@ -160,51 +188,90 @@ private fun WifiSetupStep(
             icon = Icons.Default.Wifi,
             step = stepLabel,
             title = "Set Your Home Wi-Fi",
-            subtitle = "The app uses Wi-Fi disconnection as the primary exit signal — no GPS needed."
+            subtitle = "Optional — skip for now and set it later in Settings. Wi-Fi disconnection is the primary exit signal; the app can also match by network ID without a name."
         )
 
-        if (detectedSsid != null) {
-            Card(
-                colors = CardDefaults.cardColors(
-                    containerColor = ConfidenceHigh.copy(alpha = 0.1f)
-                )
+        // ── Network picker ──────────────────────────────────────────────────
+        Card {
+            Column(
+                Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        if (availableNetworks.isEmpty()) "Visible Networks" else "Visible Networks (${availableNetworks.size})",
+                        style = MaterialTheme.typography.labelLarge
+                    )
+                    IconButton(onClick = onScanClicked) {
+                        Icon(Icons.Default.Refresh, "Scan again", Modifier.size(20.dp))
+                    }
+                }
+
+                if (availableNetworks.isEmpty()) {
+                    Text(
+                        "No networks found. Tap ↻ to scan, or type your Wi-Fi name below.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        availableNetworks.forEach { network ->
+                            val isSelected = ssid.split(",").map { it.trim() }.contains(network)
+                            FilterChip(
+                                selected = isSelected,
+                                onClick = {
+                                    // Toggle: add or remove this network from the comma list
+                                    val current = ssid.split(",")
+                                        .map { it.trim() }.filter { it.isNotEmpty() }.toMutableList()
+                                    if (isSelected) current.remove(network) else current.add(network)
+                                    onSsidChanged(current.joinToString(", "))
+                                },
+                                label = { Text(network, style = MaterialTheme.typography.bodySmall) },
+                                leadingIcon = if (network == detectedSsid) {
+                                    { Icon(Icons.Default.Wifi, null, Modifier.size(14.dp)) }
+                                } else null
+                            )
+                        }
+                    }
+                }
+
+                // Highlight currently connected network if it didn't appear in scan results
+                if (detectedSsid != null && !availableNetworks.contains(detectedSsid)) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Icon(Icons.Default.Wifi, null, tint = ConfidenceHigh)
-                        Text("Detected: $detectedSsid", style = MaterialTheme.typography.bodyLarge)
+                        Icon(Icons.Default.Wifi, null, tint = ConfidenceHigh, modifier = Modifier.size(16.dp))
+                        Text("Connected: $detectedSsid", style = MaterialTheme.typography.bodySmall, color = ConfidenceHigh)
+                        Spacer(Modifier.weight(1f))
+                        TextButton(
+                            onClick = onUseDetected,
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                        ) { Text("Use") }
                     }
-                    Button(
-                        onClick = onUseDetected,
-                        modifier = Modifier.fillMaxWidth()
-                    ) { Text("Use This Network") }
                 }
             }
         }
 
+        // ── Custom / multi-band text entry ──────────────────────────────────
         OutlinedTextField(
             value = ssid,
             onValueChange = onSsidChanged,
-            label = { Text("Home Wi-Fi Name (SSID)") },
-            placeholder = { Text("e.g. MyHomeNetwork") },
+            label = { Text("Wi-Fi Name (SSID)") },
+            placeholder = { Text("e.g. HomeWifi or HomeWifi, HomeWifi_5G") },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
-            isError = isError,
-            supportingText = if (isError) {
-                { Text("Wi-Fi name is required to detect when you leave home.") }
-            } else null
+            supportingText = {
+                Text("Optional. Tap chips above or type here. Separate multiple bands with commas.")
+            }
         )
-
-        if (!isError) {
-            Text(
-                "You can change this later in Settings.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
     }
 }
 
@@ -510,7 +577,7 @@ private fun StepHeader(
 
 // ── Previews ─────────────────────────────────────────────────────────────────
 
-@Preview(name = "Setup — step 1 Wi-Fi", showBackground = true, device = Devices.PIXEL_5)
+@Preview(name = "Setup — step 4 Wi-Fi", showBackground = true, device = Devices.PIXEL_5)
 @Composable
 private fun PreviewSetupWifiStep() {
     ExitSenseTheme {
@@ -520,17 +587,18 @@ private fun PreviewSetupWifiStep() {
                 SetupProgressBar(currentStep = SetupStep.WIFI, visibleSteps = SetupStep.entries)
                 Spacer(Modifier.height(24.dp))
                 Box(Modifier.weight(1f)) {
-                    WifiSetupStep(ssid = "", detectedSsid = "HomeNetwork_5G", stepLabel = "Step 1 of 4", onSsidChanged = {}, onUseDetected = {})
+                    WifiSetupStep(ssid = "", detectedSsid = "HomeNetwork_5G", availableNetworks = listOf("HomeNetwork_5G", "HomeNetwork_2G", "Neighbor"), stepLabel = "Step 4 of 4", onSsidChanged = {}, onUseDetected = {}, onScanClicked = {})
                 }
-                Row(Modifier.fillMaxWidth().padding(bottom = 24.dp)) {
-                    Button(onClick = {}, Modifier.fillMaxWidth()) { Text("Next") }
+                Row(Modifier.fillMaxWidth().padding(bottom = 24.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    OutlinedButton(onClick = {}, Modifier.weight(1f)) { Text("Back") }
+                    Button(onClick = {}, Modifier.weight(1f)) { Text("Get Started") }
                 }
             }
         }
     }
 }
 
-@Preview(name = "Setup — step 2 Floor", showBackground = true, device = Devices.PIXEL_5)
+@Preview(name = "Setup — step 1 Floor", showBackground = true, device = Devices.PIXEL_5)
 @Composable
 private fun PreviewSetupFloorStep() {
     ExitSenseTheme {
@@ -540,7 +608,7 @@ private fun PreviewSetupFloorStep() {
                 SetupProgressBar(currentStep = SetupStep.FLOOR, visibleSteps = SetupStep.entries)
                 Spacer(Modifier.height(24.dp))
                 Box(Modifier.weight(1f)) {
-                    FloorSetupStep(selectedFloor = 3, stepLabel = "Step 2 of 4", onFloorChanged = {})
+                    FloorSetupStep(selectedFloor = 3, stepLabel = "Step 1 of 4", onFloorChanged = {})
                 }
                 Row(Modifier.fillMaxWidth().padding(bottom = 24.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     OutlinedButton(onClick = {}, Modifier.weight(1f)) { Text("Back") }
@@ -551,7 +619,7 @@ private fun PreviewSetupFloorStep() {
     }
 }
 
-@Preview(name = "Setup — step 3 Profiles", showBackground = true, device = Devices.PIXEL_5)
+@Preview(name = "Setup — step 2 Profiles", showBackground = true, device = Devices.PIXEL_5)
 @Composable
 private fun PreviewSetupProfilesStep() {
     ExitSenseTheme {
@@ -561,7 +629,7 @@ private fun PreviewSetupProfilesStep() {
                 SetupProgressBar(currentStep = SetupStep.PROFILES, visibleSteps = SetupStep.entries)
                 Spacer(Modifier.height(24.dp))
                 Box(Modifier.weight(1f)) {
-                    ProfilesSetupStep(stepLabel = "Step 3 of 4", onCreateOfficeProfile = {})
+                    ProfilesSetupStep(stepLabel = "Step 2 of 4", onCreateOfficeProfile = {})
                 }
                 Row(Modifier.fillMaxWidth().padding(bottom = 24.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     OutlinedButton(onClick = {}, Modifier.weight(1f)) { Text("Back") }
@@ -572,7 +640,7 @@ private fun PreviewSetupProfilesStep() {
     }
 }
 
-@Preview(name = "Setup — step 4 Permissions", showBackground = true, device = Devices.PIXEL_5)
+@Preview(name = "Setup — step 3 Permissions", showBackground = true, device = Devices.PIXEL_5)
 @Composable
 private fun PreviewSetupPermissionsStep() {
     ExitSenseTheme {
@@ -582,11 +650,11 @@ private fun PreviewSetupPermissionsStep() {
                 SetupProgressBar(currentStep = SetupStep.PERMISSIONS, visibleSteps = SetupStep.entries)
                 Spacer(Modifier.height(24.dp))
                 Box(Modifier.weight(1f)) {
-                    PermissionsSetupStep(stepLabel = "Step 4 of 4")
+                    PermissionsSetupStep(stepLabel = "Step 3 of 4")
                 }
                 Row(Modifier.fillMaxWidth().padding(bottom = 24.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     OutlinedButton(onClick = {}, Modifier.weight(1f)) { Text("Back") }
-                    Button(onClick = {}, Modifier.weight(1f)) { Text("Get Started") }
+                    Button(onClick = {}, Modifier.weight(1f)) { Text("Next") }
                 }
             }
         }

@@ -37,6 +37,7 @@ fun SettingsScreen(
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val snackbarHostState = remember { SnackbarHostState() }
 
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
@@ -56,21 +57,22 @@ fun SettingsScreen(
         ActivityResultContracts.OpenDocument()
     ) { uri -> uri?.let { viewModel.importProfiles(it) } }
 
-    // Snackbar messages
     state.exportMessage?.let { msg ->
         LaunchedEffect(msg) {
-            // dismiss after shown
+            snackbarHostState.showSnackbar(msg)
             viewModel.clearExportMessage()
         }
     }
     state.importMessage?.let { msg ->
         LaunchedEffect(msg) {
+            snackbarHostState.showSnackbar(msg)
             viewModel.clearImportMessage()
         }
     }
 
     Scaffold(
-        topBar = { ExitSenseTopBar(title = "Settings", onNavigateBack = onNavigateBack) }
+        topBar = { ExitSenseTopBar(title = "Settings", onNavigateBack = onNavigateBack) },
+        snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { padding ->
 
         if (state.isLoading) { LoadingScreen(); return@Scaffold }

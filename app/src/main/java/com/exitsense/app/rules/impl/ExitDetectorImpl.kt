@@ -38,7 +38,6 @@ class ExitDetectorImpl @Inject constructor(
         (screenStateProvider as? ScreenStateProviderImpl)?.refreshUnlockFreshness()
 
         val wifi = wifiProvider.wifiState.value
-        val homeWifiSsids = parseHomeWifiSsids(homeWifiSsid)
 
         // networkIds are available without location permission in NetworkCallback context.
         // SSID requires ACCESS_FINE_LOCATION + location services on API 29+, so use it only
@@ -66,7 +65,7 @@ class ExitDetectorImpl @Inject constructor(
         // OR connected to a *different* known network (SSID readable and not home).
         val onDifferentKnownWifi = wifi.isConnected && (
             (homeNetworkIds.isNotEmpty() && wifi.networkId != -1 && wifi.networkId !in homeNetworkIds) ||
-            (homeNetworkIds.isEmpty() && wifi.ssid != null && homeWifiSsids.isNotEmpty() &&
+            (homeNetworkIds.isEmpty() && wifi.ssid != null && homeWifiSsid.isNotBlank() &&
                 !matchesHomeWifiSsid(homeWifiSsid, wifi.ssid))
         )
         if (wifi.justDisconnected ||

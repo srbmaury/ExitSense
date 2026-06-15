@@ -239,8 +239,9 @@ private fun SensorStatusCard(
     val onHome = wifiConnected && (ssidMatch || networkIdMatch)
     val wifiLabel = when {
         !wifiConnected -> "No Wi-Fi"
-        wifiSsid == null -> "Wi-Fi (name unknown)"
-        onHome -> "Home: $wifiSsid"
+        onHome && wifiSsid != null -> "Home: $wifiSsid"
+        onHome -> "Home Wi-Fi"           // matched by network ID; SSID not readable
+        wifiSsid == null -> "Wi-Fi (name hidden)"
         else -> wifiSsid
     }
 
@@ -267,9 +268,9 @@ private fun SensorStatusCard(
                     )}
                 )
             }
-            if (wifiConnected && wifiSsid == null && homeWifiSsid.isNotBlank()) {
+            if (wifiConnected && wifiSsid == null && !onHome) {
                 Text(
-                    "Wi-Fi name unreadable — check Location permission in Settings",
+                    "Wi-Fi name hidden — grant Wi-Fi Name Access permission in Settings",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error
                 )

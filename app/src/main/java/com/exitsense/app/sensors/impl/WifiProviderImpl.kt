@@ -1,6 +1,10 @@
 package com.exitsense.app.sensors.impl
 
+import android.annotation.SuppressLint
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
@@ -34,6 +38,10 @@ class WifiProviderImpl @Inject constructor(
 
     private val _wifiState = MutableStateFlow(WifiState())
     override val wifiState: StateFlow<WifiState> = _wifiState
+
+    private val _scanResults = MutableStateFlow<List<String>>(emptyList())
+    override val scanResults: StateFlow<List<String>> = _scanResults
+
     private val refCount = AtomicInteger(0)
 
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
@@ -51,8 +59,8 @@ class WifiProviderImpl @Inject constructor(
 
         override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
             if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) return
-            // caps is passed directly by the framework — WifiInfo is NOT redacted here.
-            // getNetworkId() works without location; getSsid() requires it on API 29+.
+            // caps is passed directly by the framework — WifiInfo is NOT redacted here
+            // when NEARBY_WIFI_DEVICES (API 33+) or ACCESS_FINE_LOCATION (API 29–32) is granted.
             val wifiInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
                 caps.transportInfo as? WifiInfo else null
             val ssid = getSsid(caps)
@@ -118,6 +126,57 @@ class WifiProviderImpl @Inject constructor(
             runCatching { connectivityManager.unregisterNetworkCallback(oneShot) }
         }, 3_000L)
     }
+
+    // ── WiFi scanning ──────────────────────────────────────────────────────────
+
+    private var scanReceiverRegistered = false
+
+    private val scanReceiver = object : BroadcastReceiver() {
+        override fun onReceive(ctx: Context, intent: Intent) {
+            if (intent.action != WifiManager.SCAN_RESULTS_AVAILABLE_ACTION) return
+            loadScanResultsFromCache()
+            runCatching { context.unregisterReceiver(this) }
+            scanReceiverRegistered = false
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    override fun triggerScan() {
+        // Immediately populate with whatever cached results are available, then request a fresh scan.
+        loadScanResultsFromCache()
+        if (!scanReceiverRegistered) {
+            val filter = IntentFilter(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION)
+            runCatching {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    context.registerReceiver(scanReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+                } else {
+                    @Suppress("UnspecifiedRegisterReceiverFlag")
+                    context.registerReceiver(scanReceiver, filter)
+                }
+                scanReceiverRegistered = true
+            }
+        }
+        @Suppress("DEPRECATION")
+        runCatching { wifiManager.startScan() }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun loadScanResultsFromCache() {
+        try {
+            val ssids = wifiManager.scanResults
+                .mapNotNull { r ->
+                    @Suppress("DEPRECATION")
+                    r.SSID?.takeIf { it.isNotBlank() && it != WifiManager.UNKNOWN_SSID }
+                }
+                .distinct()
+                .sortedBy { it.lowercase() }
+            if (ssids.isNotEmpty()) _scanResults.value = ssids
+        } catch (_: SecurityException) {
+            // Permission not granted — leave scan results unchanged
+        } catch (_: Exception) {}
+    }
+
+    // ── Private helpers ────────────────────────────────────────────────────────
 
     // On API 29+, read SSID from NetworkCapabilities (requires ACCESS_FINE_LOCATION).
     // Falls back to the deprecated WifiManager API for older devices.
