@@ -89,6 +89,13 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch { dataStore.removeHomeNetworkId(networkId) }
     }
 
+    fun clearHomeNetworkData() {
+        viewModelScope.launch {
+            dataStore.updateHomeWifiSsid("")
+            dataStore.clearHomeNetworkIds()
+        }
+    }
+
     fun updateHomeFloor(floor: Int) {
         viewModelScope.launch { dataStore.updateHomeFloor(floor) }
     }

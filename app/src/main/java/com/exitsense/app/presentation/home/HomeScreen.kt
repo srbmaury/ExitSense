@@ -1,5 +1,9 @@
 package com.exitsense.app.presentation.home
 
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.provider.Settings
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.lazy.LazyColumn
@@ -10,11 +14,15 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Devices
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.exitsense.app.domain.model.ExitEvent
 import com.exitsense.app.domain.model.ExitSignalType
@@ -41,6 +49,20 @@ fun HomeScreen(
     viewModel: HomeViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    // Re-check battery optimization exemption whenever the screen resumes (user may have just fixed it).
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) viewModel.refreshBatteryOptimization()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    var wifiWarningDismissed by remember { mutableStateOf(false) }
+    var batteryWarningDismissed by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -83,6 +105,37 @@ fun HomeScreen(
                     onStart = viewModel::startMonitoringService,
                     onStop = viewModel::stopMonitoringService
                 )
+            }
+
+            // Battery optimization warning
+            if (!state.batteryOptimizationExempt && !batteryWarningDismissed) {
+                item {
+                    WarningBannerCard(
+                        message = "Battery optimization may stop background detection.",
+                        actionLabel = "Fix",
+                        onAction = {
+                            context.startActivity(
+                                Intent(
+                                    Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                                    Uri.parse("package:${context.packageName}")
+                                ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            )
+                        },
+                        onDismiss = { batteryWarningDismissed = true }
+                    )
+                }
+            }
+
+            // Home WiFi not configured warning
+            if (state.homeWifiSsid.isBlank() && state.homeNetworkIds.isEmpty() && !wifiWarningDismissed) {
+                item {
+                    WarningBannerCard(
+                        message = "Home Wi-Fi not set — detection works but accuracy is reduced.",
+                        actionLabel = "Set up",
+                        onAction = onNavigateToSettings,
+                        onDismiss = { wifiWarningDismissed = true }
+                    )
+                }
             }
 
             // Live sensor status
@@ -234,6 +287,7 @@ private fun SensorStatusCard(
     pressureData: PressureData = PressureData(),
     onCalibrateBaseline: () -> Unit = {}
 ) {
+    val context = LocalContext.current
     val ssidMatch = matchesHomeWifiSsid(homeWifiSsid, wifiSsid)
     val networkIdMatch = wifiNetworkId != -1 && homeNetworkIds.isNotEmpty() && wifiNetworkId in homeNetworkIds
     val onHome = wifiConnected && (ssidMatch || networkIdMatch)
@@ -260,7 +314,18 @@ private fun SensorStatusCard(
                     icon = { Icon(Icons.Default.DirectionsWalk, null, Modifier.size(16.dp)) }
                 )
                 SuggestionChip(
-                    onClick = {},
+                    onClick = {
+                        when {
+                            !wifiConnected -> context.startActivity(
+                                Intent(Settings.ACTION_WIFI_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            )
+                            wifiSsid == null && !onHome -> context.startActivity(
+                                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                                    .setData(Uri.parse("package:${context.packageName}"))
+                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            )
+                        }
+                    },
                     label = { Text(wifiLabel) },
                     icon = { Icon(
                         if (wifiConnected) Icons.Default.Wifi else Icons.Default.WifiOff,
@@ -270,7 +335,7 @@ private fun SensorStatusCard(
             }
             if (wifiConnected && wifiSsid == null && !onHome) {
                 Text(
-                    "Wi-Fi name hidden — grant Wi-Fi Name Access permission in Settings",
+                    "Wi-Fi name hidden — go to Settings → Wi-Fi Detection → Allow",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error
                 )
@@ -397,6 +462,53 @@ private fun ProfileSummaryCard(name: String, itemCount: Int, startTime: String, 
                 }
             }
             StatusDot(true)
+        }
+    }
+}
+
+@Composable
+private fun WarningBannerCard(
+    message: String,
+    actionLabel: String? = null,
+    onAction: (() -> Unit)? = null,
+    onDismiss: (() -> Unit)? = null
+) {
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.errorContainer
+        )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Icon(
+                Icons.Default.Warning, null,
+                Modifier.size(18.dp),
+                tint = MaterialTheme.colorScheme.error
+            )
+            Text(
+                message,
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onErrorContainer
+            )
+            if (actionLabel != null && onAction != null) {
+                TextButton(
+                    onClick = onAction,
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                ) {
+                    Text(actionLabel, style = MaterialTheme.typography.labelMedium)
+                }
+            }
+            if (onDismiss != null) {
+                IconButton(onClick = onDismiss, modifier = Modifier.size(32.dp)) {
+                    Icon(Icons.Default.Close, "Dismiss", Modifier.size(16.dp))
+                }
+            }
         }
     }
 }

@@ -109,6 +109,16 @@ class AddEditProfileViewModel @Inject constructor(
             _uiState.update { it.copy(error = "Add at least one item to the profile") }
             return
         }
+        if (state.scheduleType == ScheduleType.CUSTOM && state.activeDays.isEmpty()) {
+            _uiState.update { it.copy(error = "Select at least one day for the custom schedule") }
+            return
+        }
+        val startMinutes = state.startTimeHour * 60 + state.startTimeMinute
+        val endMinutes = state.endTimeHour * 60 + state.endTimeMinute
+        if (endMinutes <= startMinutes) {
+            _uiState.update { it.copy(error = "End time must be after start time") }
+            return
+        }
 
         viewModelScope.launch {
             _uiState.update { it.copy(isSaving = true, error = null) }

@@ -2,6 +2,7 @@ package com.exitsense.app.presentation.home
 
 import android.content.Context
 import android.content.Intent
+import android.os.PowerManager
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.exitsense.app.data.preferences.UserPreferencesDataStore
@@ -44,7 +45,8 @@ data class HomeUiState(
     val homeWifiSsid: String = "",
     val homeNetworkIds: Set<Int> = emptySet(),
     val confidenceThreshold: Float = DEFAULT_EXIT_THRESHOLD,
-    val pressureData: PressureData = PressureData()
+    val pressureData: PressureData = PressureData(),
+    val batteryOptimizationExempt: Boolean = true
 )
 
 
@@ -71,6 +73,7 @@ class HomeViewModel @Inject constructor(
 
     init {
         notificationManager.createChannels()
+        refreshBatteryOptimization()
         motionProvider.startMonitoring()
         wifiProvider.startMonitoring()
         // Force a fresh SSID read now that setup permissions may have just been granted.
@@ -192,6 +195,11 @@ class HomeViewModel @Inject constructor(
 
     fun runManualDetection() {
         viewModelScope.launch { detectNow() }
+    }
+
+    fun refreshBatteryOptimization() {
+        val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+        _uiState.update { it.copy(batteryOptimizationExempt = pm.isIgnoringBatteryOptimizations(context.packageName)) }
     }
 
     private suspend fun detectNow() {

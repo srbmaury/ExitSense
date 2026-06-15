@@ -1,6 +1,7 @@
 package com.exitsense.app.viewmodel
 
 import android.content.Context
+import android.os.PowerManager
 import app.cash.turbine.test
 import com.exitsense.app.data.preferences.UserPreferencesDataStore
 import com.exitsense.app.domain.model.*
@@ -83,6 +84,10 @@ class HomeViewModelTest {
         every { stepCountProvider.stepData } returns MutableStateFlow(StepData())
         every { chargerStateProvider.chargerData } returns MutableStateFlow(ChargerData())
         every { ambientLightProvider.lightData } returns MutableStateFlow(LightData())
+
+        val powerManager = mockk<PowerManager>(relaxed = true)
+        every { powerManager.isIgnoringBatteryOptimizations(any()) } returns true
+        every { context.getSystemService(Context.POWER_SERVICE) } returns powerManager
     }
 
     @After

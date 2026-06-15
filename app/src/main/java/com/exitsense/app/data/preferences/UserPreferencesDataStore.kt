@@ -89,6 +89,10 @@ class UserPreferencesDataStore @Inject constructor(
         }
     }
 
+    suspend fun clearHomeNetworkIds() {
+        context.dataStore.edit { it[Keys.HOME_NETWORK_IDS] = "" }
+    }
+
     suspend fun restoreHomeNetworkIds(ids: Set<Int>) {
         context.dataStore.edit { prefs ->
             prefs[Keys.HOME_NETWORK_IDS] = if (ids.isEmpty()) "" else ids.joinToString("|")

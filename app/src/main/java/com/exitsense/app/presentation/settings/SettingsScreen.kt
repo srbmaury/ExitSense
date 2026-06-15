@@ -1,10 +1,15 @@
 package com.exitsense.app.presentation.settings
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.text.KeyboardActions
@@ -21,6 +26,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.tooling.preview.Devices
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -39,10 +45,14 @@ fun SettingsScreen(
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
 
+    var permissionRefreshTrigger by remember { mutableStateOf(0) }
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) viewModel.refreshWifiSsid()
+            if (event == Lifecycle.Event.ON_RESUME) {
+                viewModel.refreshWifiSsid()
+                permissionRefreshTrigger++
+            }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
@@ -87,6 +97,7 @@ fun SettingsScreen(
         ) {
             // ── Wi-Fi Detection ──────────────────────────────────────────────
             item { SectionHeader("Wi-Fi Detection") }
+            item { WifiNamePermissionCard(permissionRefreshTrigger = permissionRefreshTrigger) }
             item {
                 WifiSsidSetting(
                     currentSsid = state.preferences.homeWifiSsid,
@@ -98,6 +109,9 @@ fun SettingsScreen(
                     onAddNetworkId = viewModel::addHomeNetworkId,
                     onRemoveNetworkId = viewModel::removeHomeNetworkId
                 )
+            }
+            item {
+                ResetHomeNetworkCard(onReset = viewModel::clearHomeNetworkData)
             }
 
             // ── Floor Detection ──────────────────────────────────────────────
@@ -538,6 +552,110 @@ private fun BackupSetting(
                     color = if (it.startsWith("Import failed")) MaterialTheme.colorScheme.error
                             else MaterialTheme.colorScheme.primary)
             }
+        }
+    }
+}
+
+@Composable
+private fun WifiNamePermissionCard(permissionRefreshTrigger: Int) {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return
+
+    val context = LocalContext.current
+    var granted by remember(permissionRefreshTrigger) {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        )
+    }
+
+    val launcher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { results ->
+        granted = results[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+                  results[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+    }
+
+    if (!granted) {
+        Card(
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.6f)
+            )
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Icon(Icons.Default.WifiOff, null, tint = MaterialTheme.colorScheme.error)
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "Wi-Fi Name Access not granted",
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.Medium,
+                        color = MaterialTheme.colorScheme.onErrorContainer
+                    )
+                    Text(
+                        "The app can't read your Wi-Fi name to detect home. Tap Allow to fix.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.8f)
+                    )
+                }
+                TextButton(
+                    onClick = {
+                        launcher.launch(arrayOf(
+                            Manifest.permission.ACCESS_FINE_LOCATION,
+                            Manifest.permission.ACCESS_COARSE_LOCATION
+                        ))
+                    }
+                ) { Text("Allow") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ResetHomeNetworkCard(onReset: () -> Unit) {
+    var showDialog by remember { mutableStateOf(false) }
+
+    if (showDialog) {
+        AlertDialog(
+            onDismissRequest = { showDialog = false },
+            title = { Text("Reset Home Network?") },
+            text = {
+                Text("This clears your saved Wi-Fi name and all saved network IDs. The app won't recognise your home network until you re-configure it.")
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = { onReset(); showDialog = false },
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                ) { Text("Reset") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDialog = false }) { Text("Cancel") }
+            }
+        )
+    }
+
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("Reset Home Network", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
+                Text(
+                    "Clear saved Wi-Fi name and all network IDs",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            TextButton(
+                onClick = { showDialog = true },
+                colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
+            ) { Text("Reset") }
         }
     }
 }

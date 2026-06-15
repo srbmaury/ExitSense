@@ -27,7 +27,9 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.tooling.preview.Devices
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -43,6 +45,14 @@ fun SetupWizardScreen(
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
+    val context = LocalContext.current
+    var permissionsCanProceed by remember {
+        val activityOk = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.ACTIVITY_RECOGNITION) == PackageManager.PERMISSION_GRANTED
+        val notifyOk = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+        mutableStateOf(activityOk && notifyOk)
+    }
     val importLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri -> uri?.let { viewModel.importBackup(it) } }
@@ -91,7 +101,10 @@ fun SetupWizardScreen(
                         onCreateOfficeProfile = viewModel::createDefaultOfficeProfile,
                         onSkip = viewModel::nextStep
                     )
-                    SetupStep.PERMISSIONS -> PermissionsSetupStep(stepLabel = "Step $stepNum of $totalSteps")
+                    SetupStep.PERMISSIONS -> PermissionsSetupStep(
+                        stepLabel = "Step $stepNum of $totalSteps",
+                        onCanProceedChanged = { permissionsCanProceed = it }
+                    )
                     SetupStep.WIFI -> WifiSetupStep(
                         ssid = state.homeWifiSsid,
                         detectedSsid = state.detectedSsid,
@@ -134,6 +147,7 @@ fun SetupWizardScreen(
                         if (state.currentStep == SetupStep.WIFI) viewModel.finishSetup()
                         else viewModel.nextStep()
                     },
+                    enabled = state.currentStep != SetupStep.PERMISSIONS || permissionsCanProceed,
                     modifier = Modifier.weight(1f)
                 ) {
                     Text(if (state.currentStep == SetupStep.WIFI) "Get Started" else "Next")
@@ -449,7 +463,7 @@ private fun ProfilesSetupStep(
 }
 
 @Composable
-private fun PermissionsSetupStep(stepLabel: String) {
+private fun PermissionsSetupStep(stepLabel: String, onCanProceedChanged: (Boolean) -> Unit) {
     val context = LocalContext.current
 
     var activityGranted by remember {
@@ -475,6 +489,9 @@ private fun PermissionsSetupStep(stepLabel: String) {
         val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
         mutableStateOf(pm.isIgnoringBatteryOptimizations(context.packageName))
     }
+
+    val mandatoryCanProceed = activityGranted && notifyGranted
+    LaunchedEffect(mandatoryCanProceed) { onCanProceedChanged(mandatoryCanProceed) }
 
     val activityLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -553,6 +570,7 @@ private fun PermissionsSetupStep(stepLabel: String) {
             title = "Activity Recognition",
             description = "Detects walking, running, driving (no location data).",
             isGranted = activityGranted,
+            tag = "Required",
             onRequest = {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     activityLauncher.launch(arrayOf(Manifest.permission.ACTIVITY_RECOGNITION))
@@ -568,6 +586,7 @@ private fun PermissionsSetupStep(stepLabel: String) {
                 title = "Post Notifications",
                 description = "Required to show exit reminders on Android 13+.",
                 isGranted = notifyGranted,
+                tag = "Required",
                 onRequest = {
                     notifyLauncher.launch(arrayOf(Manifest.permission.POST_NOTIFICATIONS))
                 }
@@ -580,6 +599,7 @@ private fun PermissionsSetupStep(stepLabel: String) {
                 title = "Wi-Fi Name Access",
                 description = "Allows reading your Wi-Fi name to detect when you leave home. Android requires location permission for this — your location is never stored or shared.",
                 isGranted = wifiNameGranted,
+                tag = "Recommended",
                 onRequest = {
                     wifiNameLauncher.launch(
                         arrayOf(
@@ -596,6 +616,7 @@ private fun PermissionsSetupStep(stepLabel: String) {
             title = "Battery Optimization",
             description = "Keeps background detection running reliably. Without this the system may pause the app.",
             isGranted = batteryGranted,
+            tag = "Recommended",
             onRequest = {
                 batteryLauncher.launch(
                     Intent(
@@ -614,7 +635,8 @@ private fun PermissionCard(
     title: String,
     description: String,
     isGranted: Boolean,
-    onRequest: () -> Unit
+    onRequest: () -> Unit,
+    tag: String? = null
 ) {
     Card(
         colors = CardDefaults.cardColors(
@@ -640,7 +662,23 @@ private fun PermissionCard(
                     tint = if (isGranted) ConfidenceHigh else MaterialTheme.colorScheme.primary
                 )
                 Column {
-                    Text(title, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
+                    val errorColor = MaterialTheme.colorScheme.error
+                    Text(
+                        text = buildAnnotatedString {
+                            append(title)
+                            if (tag == "Required") {
+                                append(" ")
+                                withStyle(
+                                    androidx.compose.ui.text.SpanStyle(
+                                        color = errorColor,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                ) { append("*") }
+                            }
+                        },
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.Medium
+                    )
                     Text(description, style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
@@ -732,7 +770,7 @@ private fun PreviewSetupPermissionsStep() {
                 SetupProgressBar(currentStep = SetupStep.PERMISSIONS, visibleSteps = SetupStep.entries)
                 Spacer(Modifier.height(24.dp))
                 Box(Modifier.weight(1f)) {
-                    PermissionsSetupStep(stepLabel = "Step 3 of 4")
+                    PermissionsSetupStep(stepLabel = "Step 3 of 4", onCanProceedChanged = {})
                 }
                 Row(Modifier.fillMaxWidth().padding(bottom = 24.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     OutlinedButton(onClick = {}, Modifier.weight(1f)) { Text("Back") }
