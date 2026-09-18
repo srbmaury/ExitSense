@@ -16,6 +16,7 @@ import kotlinx.coroutines.test.runTest
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
+import java.util.Calendar
 
 class ExitDetectorTest {
 
@@ -26,6 +27,7 @@ class ExitDetectorTest {
     private lateinit var stepCountProvider: StepCountProvider
     private lateinit var chargerStateProvider: ChargerStateProvider
     private lateinit var ambientLightProvider: AmbientLightProvider
+    private lateinit var departureTracker: DepartureTracker
     private lateinit var detector: ExitDetectorImpl
 
     private val defaultWeights = SignalWeight()
@@ -59,9 +61,14 @@ class ExitDetectorTest {
         every { chargerStateProvider.chargerData } returns MutableStateFlow(ChargerData(lastUnpluggedAt = 0L))
         every { ambientLightProvider.lightData } returns MutableStateFlow(LightData(isAvailable = false))
 
+        departureTracker = mockk()
+        every { departureTracker.isTracking } returns false
+        every { departureTracker.departure } returns MutableStateFlow(null)
+
         detector = ExitDetectorImpl(
             motionProvider, wifiProvider, pressureProvider, screenStateProvider,
-            stepCountProvider, chargerStateProvider, ambientLightProvider, defaultWeights
+            stepCountProvider, chargerStateProvider, ambientLightProvider, defaultWeights,
+            departureTracker
         )
     }
 
@@ -286,5 +293,185 @@ class ExitDetectorTest {
 
         assertFalse(result.isExitDetected)
         assertEquals(0f, result.confidenceScore, 0.0f)
+    }
+
+    // ── Unidentifiable network ───────────────────────────────────────────────
+
+    @Test
+    fun `connected to unidentifiable wifi is treated as home`() = runTest {
+        every { wifiProvider.wifiState } returns MutableStateFlow(
+            WifiState(isConnected = true, ssid = null, networkId = -1)
+        )
+        every { motionProvider.currentMotion } returns MutableStateFlow(MotionType.DRIVING)
+        every { screenStateProvider.recentlyUnlocked } returns MutableStateFlow(true)
+
+        val result = detector.evaluate(
+            activeProfiles = listOf(testProfile),
+            homeWifiSsid = "HomeWifi",
+            homeNetworkIds = setOf(42),
+            threshold = 30f
+        )
+
+        assertFalse(result.isExitDetected)
+        assertEquals(0f, result.confidenceScore, 0.0f)
+        assertEquals(listOf(ExitSignalType.WIFI_UNVERIFIED), result.signals.map { it.type })
+    }
+
+    @Test
+    fun `ssid match counts as home when networkId is unreadable`() = runTest {
+        every { wifiProvider.wifiState } returns MutableStateFlow(
+            WifiState(isConnected = true, ssid = "HomeWifi", networkId = -1)
+        )
+
+        val result = detector.evaluate(
+            activeProfiles = listOf(testProfile),
+            homeWifiSsid = "HomeWifi",
+            homeNetworkIds = setOf(42),
+            threshold = 70f
+        )
+
+        assertTrue(result.signals.any { it.type == ExitSignalType.WIFI_CONNECTED_HOME })
+    }
+
+    @Test
+    fun `ssid match counts as home when saved networkId has changed`() = runTest {
+        every { wifiProvider.wifiState } returns MutableStateFlow(
+            WifiState(isConnected = true, ssid = "HomeWifi", networkId = 43)
+        )
+
+        val result = detector.evaluate(
+            activeProfiles = listOf(testProfile),
+            homeWifiSsid = "HomeWifi",
+            homeNetworkIds = setOf(42),
+            threshold = 70f
+        )
+
+        assertTrue(result.signals.any { it.type == ExitSignalType.WIFI_CONNECTED_HOME })
+        assertEquals(0f, result.confidenceScore, 0.0f)
+    }
+
+    // ── Supporting signals ───────────────────────────────────────────────────
+
+    @Test
+    fun `unlock charger and light are ignored without wifi or motion`() = runTest {
+        every { screenStateProvider.recentlyUnlocked } returns MutableStateFlow(true)
+        every { chargerStateProvider.chargerData } returns MutableStateFlow(
+            ChargerData(lastUnpluggedAt = System.currentTimeMillis())
+        )
+        every { ambientLightProvider.lightData } returns MutableStateFlow(
+            LightData(isAvailable = true, luxLevel = 20_000f, isOutdoor = true)
+        )
+
+        val result = detector.evaluate(
+            activeProfiles = listOf(testProfile),
+            homeWifiSsid = "",
+            threshold = 70f
+        )
+
+        val types = result.signals.map { it.type }
+        assertFalse(ExitSignalType.SCREEN_UNLOCKED in types)
+        assertFalse(ExitSignalType.CHARGER_UNPLUGGED in types)
+        assertFalse(ExitSignalType.AMBIENT_LIGHT in types)
+        assertEquals(defaultWeights.withinTimeWindow, result.confidenceScore, 0.1f)
+    }
+
+    @Test
+    fun `unlock and charger count once the user is walking`() = runTest {
+        every { motionProvider.currentMotion } returns MutableStateFlow(MotionType.WALKING)
+        every { screenStateProvider.recentlyUnlocked } returns MutableStateFlow(true)
+        every { chargerStateProvider.chargerData } returns MutableStateFlow(
+            ChargerData(lastUnpluggedAt = System.currentTimeMillis())
+        )
+
+        val result = detector.evaluate(
+            activeProfiles = listOf(testProfile),
+            homeWifiSsid = "",
+            threshold = 70f
+        )
+
+        val types = result.signals.map { it.type }
+        assertTrue(ExitSignalType.SCREEN_UNLOCKED in types)
+        assertTrue(ExitSignalType.CHARGER_UNPLUGGED in types)
+    }
+
+    // ── Profile matching ─────────────────────────────────────────────────────
+
+    @Test
+    fun `no profile is matched outside every schedule`() = runTest {
+        val offHours = Calendar.getInstance().get(Calendar.HOUR_OF_DAY).let { (it + 12) % 24 }
+        val outOfSchedule = testProfile.copy(
+            startTimeHour = offHours, startTimeMinute = 0,
+            endTimeHour = offHours, endTimeMinute = 1
+        )
+        every { wifiProvider.wifiState } returns MutableStateFlow(
+            WifiState(isConnected = false, justDisconnected = true)
+        )
+
+        val result = detector.evaluate(
+            activeProfiles = listOf(outOfSchedule),
+            homeWifiSsid = "HomeWifi",
+            threshold = 70f
+        )
+
+        assertNull(result.matchedProfile)
+    }
+
+    // ── Departure tracking ───────────────────────────────────────────────────
+
+    private fun tracking(departure: Departure?) {
+        every { departureTracker.isTracking } returns true
+        every { departureTracker.departure } returns MutableStateFlow(departure)
+    }
+
+    @Test
+    fun `open departure from home wifi scores the wifi signal`() = runTest {
+        tracking(Departure(startedAt = 0L, fromSsid = "HomeWifi", fromNetworkId = 42))
+
+        val result = detector.evaluate(listOf(testProfile), "HomeWifi", setOf(42), threshold = 70f)
+
+        assertTrue(result.signals.any { it.type == ExitSignalType.WIFI_DISCONNECTED })
+    }
+
+    @Test
+    fun `being off wifi without an open departure does not score`() = runTest {
+        tracking(null)
+        every { wifiProvider.wifiState } returns MutableStateFlow(WifiState(isConnected = false))
+        every { motionProvider.currentMotion } returns MutableStateFlow(MotionType.WALKING)
+
+        val result = detector.evaluate(listOf(testProfile), "HomeWifi", threshold = 70f)
+
+        assertFalse(result.signals.any { it.type == ExitSignalType.WIFI_DISCONNECTED })
+        assertFalse(result.isExitDetected)
+    }
+
+    @Test
+    fun `departure from another network does not score`() = runTest {
+        tracking(Departure(startedAt = 0L, fromSsid = "CafeWifi", fromNetworkId = 7))
+
+        val result = detector.evaluate(listOf(testProfile), "HomeWifi", setOf(42), threshold = 70f)
+
+        assertFalse(result.signals.any { it.type == ExitSignalType.WIFI_DISCONNECTED })
+    }
+
+    @Test
+    fun `departure from an unidentified network counts as leaving home`() = runTest {
+        tracking(Departure(startedAt = 0L, fromSsid = null, fromNetworkId = -1))
+
+        val result = detector.evaluate(listOf(testProfile), "HomeWifi", setOf(42), threshold = 70f)
+
+        assertTrue(result.signals.any { it.type == ExitSignalType.WIFI_DISCONNECTED })
+    }
+
+    @Test
+    fun `sitting on office wifi does not score while tracking`() = runTest {
+        tracking(null)
+        every { wifiProvider.wifiState } returns MutableStateFlow(
+            WifiState(isConnected = true, ssid = "OfficeWifi", networkId = 9)
+        )
+        every { motionProvider.currentMotion } returns MutableStateFlow(MotionType.WALKING)
+
+        val result = detector.evaluate(listOf(testProfile), "HomeWifi", setOf(42), threshold = 70f)
+
+        assertFalse(result.signals.any { it.type == ExitSignalType.WIFI_DISCONNECTED })
     }
 }

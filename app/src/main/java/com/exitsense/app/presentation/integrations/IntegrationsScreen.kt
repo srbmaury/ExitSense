@@ -162,7 +162,8 @@ private fun IntegrationCard(
     hasPermission: Boolean,
     permissionLabel: String,
     permissionRationale: String,
-    calendarEvents: List<String> = emptyList(),
+    /** Upcoming events for the calendar card; null for cards that don't list events. */
+    calendarEvents: List<String>? = null,
     onToggle: (Boolean) -> Unit,
     onGrantPermission: () -> Unit
 ) {
@@ -253,7 +254,7 @@ private fun IntegrationCard(
                 }
 
                 // Collapsible upcoming events section
-                if (hasPermission && calendarEvents.isNotEmpty()) {
+                if (hasPermission && !calendarEvents.isNullOrEmpty()) {
                     HorizontalDivider()
                     Row(
                         modifier = Modifier
@@ -300,7 +301,7 @@ private fun IntegrationCard(
                             }
                         }
                     }
-                } else if (hasPermission && calendarEvents.isEmpty()) {
+                } else if (hasPermission && calendarEvents != null) {
                     Text(
                         "No events in the next 3 hours",
                         style = MaterialTheme.typography.bodySmall,

@@ -66,6 +66,8 @@ class MotionProviderImpl @Inject constructor(
             pendingMotion = MotionType.STILL
             pendingCount = 0
         }
+        // Don't leave a stale "walking" reading behind once nothing is measuring
+        _currentMotion.value = MotionType.STILL
     }
 
     override fun onSensorChanged(event: SensorEvent?) {

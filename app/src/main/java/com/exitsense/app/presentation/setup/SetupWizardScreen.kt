@@ -37,6 +37,9 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.exitsense.app.presentation.theme.ConfidenceHigh
 import com.exitsense.app.presentation.theme.ExitSenseTheme
+import com.exitsense.app.rules.joinHomeWifiSsids
+import com.exitsense.app.rules.parseHomeWifiSsids
+import com.exitsense.app.util.WifiNamePermission
 
 @Composable
 fun SetupWizardScreen(
@@ -286,14 +289,13 @@ private fun WifiSetupStep(
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         availableNetworks.forEach { network ->
-                            val isSelected = ssid.split(",").map { it.trim() }.contains(network)
+                            val isSelected = network in parseHomeWifiSsids(ssid)
                             FilterChip(
                                 selected = isSelected,
                                 onClick = {
-                                    val current = ssid.split(",")
-                                        .map { it.trim() }.filter { it.isNotEmpty() }.toMutableList()
+                                    val current = parseHomeWifiSsids(ssid).toMutableList()
                                     if (isSelected) current.remove(network) else current.add(network)
-                                    onSsidChanged(current.joinToString(", "))
+                                    onSsidChanged(joinHomeWifiSsids(current))
                                 },
                                 label = { Text(network, style = MaterialTheme.typography.bodySmall) },
                                 leadingIcon = if (network == detectedSsid) {
@@ -336,7 +338,7 @@ private fun WifiSetupStep(
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
             supportingText = {
-                Text("Optional. Tap chips above or type here. Separate multiple bands with commas.")
+                Text("Optional. Tap chips above or type here. Separate multiple names with commas (type \\, for a comma inside a name).")
             }
         )
     }
@@ -479,11 +481,7 @@ private fun PermissionsSetupStep(stepLabel: String, onCanProceedChanged: (Boolea
         )
     }
     var wifiNameGranted by remember {
-        mutableStateOf(
-            Build.VERSION.SDK_INT < Build.VERSION_CODES.P ||
-            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
-            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
-        )
+        mutableStateOf(WifiNamePermission.isGranted(context))
     }
     var batteryGranted by remember {
         val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
@@ -503,11 +501,7 @@ private fun PermissionsSetupStep(stepLabel: String, onCanProceedChanged: (Boolea
 
     val wifiNameLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { results ->
-        wifiNameGranted =
-            results[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
-            results[Manifest.permission.ACCESS_COARSE_LOCATION] == true
-    }
+    ) { wifiNameGranted = WifiNamePermission.isGranted(context) }
 
     val batteryLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -597,16 +591,11 @@ private fun PermissionsSetupStep(stepLabel: String, onCanProceedChanged: (Boolea
             PermissionCard(
                 icon = Icons.Default.Wifi,
                 title = "Wi-Fi Name Access",
-                description = "Allows reading your Wi-Fi name to detect when you leave home. Android requires location permission for this — your location is never stored or shared.",
+                description = "Allows reading and scanning Wi-Fi names to detect when you leave home. Android requires location permission for Wi-Fi scans — your location is never stored or shared.",
                 isGranted = wifiNameGranted,
                 tag = "Recommended",
                 onRequest = {
-                    wifiNameLauncher.launch(
-                        arrayOf(
-                            Manifest.permission.ACCESS_FINE_LOCATION,
-                            Manifest.permission.ACCESS_COARSE_LOCATION
-                        )
-                    )
+                    wifiNameLauncher.launch(WifiNamePermission.requiredPermissions())
                 }
             )
         }

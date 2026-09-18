@@ -14,8 +14,10 @@ import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import androidx.annotation.RequiresApi
 import com.exitsense.app.sensors.WifiProvider
 import com.exitsense.app.sensors.WifiState
+import com.exitsense.app.util.DebugLog
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -44,27 +46,54 @@ class WifiProviderImpl @Inject constructor(
 
     private val refCount = AtomicInteger(0)
 
-    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+    /**
+     * On API 31+ a NetworkCallback only receives an unredacted WifiInfo (SSID, networkId)
+     * when registered with FLAG_INCLUDE_LOCATION_INFO — and only while the app can use its
+     * fine location grant (in the foreground, or from a location-type foreground service).
+     */
+    private class WifiCallback : ConnectivityManager.NetworkCallback {
+        var handleAvailable: () -> Unit = {}
+        var handleLost: () -> Unit = {}
+        var handleCapabilities: (NetworkCapabilities) -> Unit = {}
 
-        override fun onAvailable(network: Network) {
+        constructor() : super()
+
+        @RequiresApi(Build.VERSION_CODES.S)
+        constructor(flags: Int) : super(flags)
+
+        override fun onAvailable(network: Network) = handleAvailable()
+        override fun onLost(network: Network) = handleLost()
+        override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) handleCapabilities(caps)
+        }
+
+        companion object {
+            fun create(): WifiCallback =
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    WifiCallback(ConnectivityManager.NetworkCallback.FLAG_INCLUDE_LOCATION_INFO)
+                } else {
+                    WifiCallback()
+                }
+        }
+    }
+
+    private val networkCallback = WifiCallback.create().apply {
+        handleAvailable = {
             // Don't call getNetworkCapabilities() here — on API 29+ it returns a redacted
             // WifiInfo (SSID = <unknown ssid>) outside a callback parameter context.
             // onCapabilitiesChanged fires immediately after and owns the SSID update.
             _wifiState.update { it.copy(isConnected = true, justDisconnected = false) }
         }
-
-        override fun onLost(network: Network) {
+        handleLost = {
+            DebugLog.d("wifi") { "disconnected" }
             _wifiState.update { WifiState(isConnected = false, ssid = null, networkId = -1, justDisconnected = true) }
         }
-
-        override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
-            if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) return
-            // caps is passed directly by the framework — WifiInfo is NOT redacted here
-            // when NEARBY_WIFI_DEVICES (API 33+) or ACCESS_FINE_LOCATION (API 29–32) is granted.
+        handleCapabilities = { caps ->
             val wifiInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
                 caps.transportInfo as? WifiInfo else null
             val ssid = getSsid(caps)
             val networkId = wifiInfo?.networkId ?: -1
+            DebugLog.d("wifi") { "connected ssid=$ssid networkId=$networkId" }
             _wifiState.update { it.copy(isConnected = true, ssid = ssid, networkId = networkId, justDisconnected = false) }
         }
     }
@@ -91,7 +120,8 @@ class WifiProviderImpl @Inject constructor(
 
     override fun refresh() {
         // Synchronous getNetworkCapabilities() returns a redacted WifiInfo on API 29+.
-        // The only reliable way to get the real SSID is inside a NetworkCallback parameter.
+        // The only reliable way to get the real SSID is inside a NetworkCallback parameter
+        // (registered with FLAG_INCLUDE_LOCATION_INFO on API 31+).
         // Register a one-shot callback: onCapabilitiesChanged fires immediately for the
         // currently connected WiFi and provides an unredacted WifiInfo.
         if (!isCurrentlyConnectedToWifi()) {
@@ -103,21 +133,19 @@ class WifiProviderImpl @Inject constructor(
             .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
             .build()
         val handler = Handler(Looper.getMainLooper())
-        val oneShot = object : ConnectivityManager.NetworkCallback() {
-            override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
-                if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) return
-                handler.removeCallbacksAndMessages(null)
-                val wifiInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
-                    caps.transportInfo as? WifiInfo else null
-                val networkId = wifiInfo?.networkId ?: -1
-                _wifiState.update { it.copy(ssid = getSsid(caps), networkId = networkId) }
-                runCatching { connectivityManager.unregisterNetworkCallback(this) }
-            }
-            override fun onLost(network: Network) {
-                handler.removeCallbacksAndMessages(null)
-                _wifiState.update { WifiState(isConnected = false, ssid = null, networkId = -1) }
-                runCatching { connectivityManager.unregisterNetworkCallback(this) }
-            }
+        val oneShot = WifiCallback.create()
+        oneShot.handleCapabilities = { caps ->
+            handler.removeCallbacksAndMessages(null)
+            val wifiInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
+                caps.transportInfo as? WifiInfo else null
+            val networkId = wifiInfo?.networkId ?: -1
+            _wifiState.update { it.copy(ssid = getSsid(caps), networkId = networkId) }
+            runCatching { connectivityManager.unregisterNetworkCallback(oneShot) }
+        }
+        oneShot.handleLost = {
+            handler.removeCallbacksAndMessages(null)
+            _wifiState.update { WifiState(isConnected = false, ssid = null, networkId = -1) }
+            runCatching { connectivityManager.unregisterNetworkCallback(oneShot) }
         }
         runCatching { connectivityManager.registerNetworkCallback(request, oneShot) }
         // Safety net: if the callback never fires (Doze, odd device state), unregister after 3 s
