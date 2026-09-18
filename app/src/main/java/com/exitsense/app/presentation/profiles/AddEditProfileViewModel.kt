@@ -115,8 +115,8 @@ class AddEditProfileViewModel @Inject constructor(
         }
         val startMinutes = state.startTimeHour * 60 + state.startTimeMinute
         val endMinutes = state.endTimeHour * 60 + state.endTimeMinute
-        if (endMinutes <= startMinutes) {
-            _uiState.update { it.copy(error = "End time must be after start time") }
+        if (endMinutes == startMinutes) {
+            _uiState.update { it.copy(error = "Start and end time must be different") }
             return
         }
 

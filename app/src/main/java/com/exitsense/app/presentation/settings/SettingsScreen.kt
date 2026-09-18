@@ -1,12 +1,9 @@
 package com.exitsense.app.presentation.settings
 
-import android.Manifest
-import android.content.pm.PackageManager
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
-import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.ui.platform.LocalContext
@@ -33,8 +30,10 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.exitsense.app.presentation.components.ExitSenseTopBar
 import com.exitsense.app.presentation.components.LoadingScreen
 import com.exitsense.app.presentation.theme.ExitSenseTheme
+import com.exitsense.app.rules.joinHomeWifiSsids
 import com.exitsense.app.rules.matchesHomeWifiSsid
 import com.exitsense.app.rules.parseHomeWifiSsids
+import com.exitsense.app.util.WifiNamePermission
 import kotlin.math.roundToInt
 
 @Composable
@@ -233,7 +232,7 @@ private fun WifiSsidSetting(
     fun withSavedSsid(ssid: String): String {
         val saved = parseHomeWifiSsids(currentSsid)
         if (saved.any { it.equals(ssid, ignoreCase = true) }) return currentSsid
-        return (saved + ssid.trim()).joinToString(", ")
+        return joinHomeWifiSsids(saved + ssid)
     }
 
     Card {
@@ -562,18 +561,12 @@ private fun WifiNamePermissionCard(permissionRefreshTrigger: Int) {
 
     val context = LocalContext.current
     var granted by remember(permissionRefreshTrigger) {
-        mutableStateOf(
-            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
-            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
-        )
+        mutableStateOf(WifiNamePermission.isGranted(context))
     }
 
     val launcher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { results ->
-        granted = results[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
-                  results[Manifest.permission.ACCESS_COARSE_LOCATION] == true
-    }
+    ) { granted = WifiNamePermission.isGranted(context) }
 
     if (!granted) {
         Card(
@@ -604,10 +597,7 @@ private fun WifiNamePermissionCard(permissionRefreshTrigger: Int) {
                 }
                 TextButton(
                     onClick = {
-                        launcher.launch(arrayOf(
-                            Manifest.permission.ACCESS_FINE_LOCATION,
-                            Manifest.permission.ACCESS_COARSE_LOCATION
-                        ))
+                        launcher.launch(WifiNamePermission.requiredPermissions())
                     }
                 ) { Text("Allow") }
             }

@@ -238,6 +238,7 @@ private fun MonitoringCard(
     onStop: () -> Unit
 ) {
     Card(
+        onClick = { if (isMonitoring) onStop() else onStart() },
         colors = CardDefaults.cardColors(
             containerColor = if (isMonitoring)
                 ConfidenceHigh.copy(alpha = 0.1f)

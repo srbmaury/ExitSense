@@ -20,7 +20,6 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.exitsense.app.presentation.theme.ConfidenceHigh
-import com.exitsense.app.presentation.theme.ConfidenceLow
 import com.exitsense.app.presentation.theme.ConfidenceMedium
 import com.exitsense.app.presentation.theme.ExitSenseTheme
 
@@ -62,10 +61,11 @@ fun ConfidenceBar(
     modifier: Modifier = Modifier
 ) {
     val normalised = (confidence / 100f).coerceIn(0f, 1f)
+    // Low confidence is the normal "still home" state, so it stays neutral rather than red
     val color = when {
         confidence >= threshold -> ConfidenceHigh
         confidence >= threshold * 0.6f -> ConfidenceMedium
-        else -> ConfidenceLow
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
     }
     Column(modifier = modifier) {
         Row(
@@ -103,7 +103,7 @@ fun SignalChip(
     score: Float,
     modifier: Modifier = Modifier
 ) {
-    val chipColor = if (score > 0) ConfidenceHigh else ConfidenceLow
+    val chipColor = if (score > 0) ConfidenceHigh else MaterialTheme.colorScheme.onSurfaceVariant
     SuggestionChip(
         onClick = {},
         label = {

@@ -45,6 +45,7 @@ class AmbientLightProviderImpl @Inject constructor(
         if (refCount.decrementAndGet() > 0) return
         sensorManager.unregisterListener(this)
         recentReadings.clear()
+        _lightData.update { it.copy(isOutdoor = false) }
     }
 
     override fun onSensorChanged(event: SensorEvent?) {

@@ -19,7 +19,8 @@ class CalendarRepository @Inject constructor(
     @ApplicationContext private val context: Context
 ) {
     /**
-     * Returns titles of calendar event instances starting within the next [withinHours] hours.
+     * Returns titles of timed calendar events starting within the next [withinHours] hours
+     * (events already under way and all-day events are left out).
      * Uses CalendarContract.Instances so recurring events are correctly expanded.
      */
     suspend fun getUpcomingEvents(withinHours: Int = 3): List<String> {
@@ -33,7 +34,11 @@ class CalendarRepository @Inject constructor(
 
                 val cursor = CalendarContract.Instances.query(
                     context.contentResolver,
-                    arrayOf(CalendarContract.Instances.TITLE, CalendarContract.Instances.BEGIN),
+                    arrayOf(
+                        CalendarContract.Instances.TITLE,
+                        CalendarContract.Instances.BEGIN,
+                        CalendarContract.Instances.ALL_DAY
+                    ),
                     now,
                     until
                 ) ?: return@withContext emptyList()
@@ -42,10 +47,18 @@ class CalendarRepository @Inject constructor(
                 cursor.use { c ->
                     val titleIdx = c.getColumnIndex(CalendarContract.Instances.TITLE)
                     val beginIdx = c.getColumnIndex(CalendarContract.Instances.BEGIN)
-                    while (c.moveToNext() && events.size < 3) {
+                    val allDayIdx = c.getColumnIndex(CalendarContract.Instances.ALL_DAY)
+                    // The query returns everything overlapping the range; keep only timed
+                    // events that are still ahead, soonest first
+                    val upcoming = mutableListOf<Pair<Long, String>>()
+                    while (c.moveToNext()) {
                         val title = c.getString(titleIdx) ?: continue
-                        val time = timeFmt.format(Date(c.getLong(beginIdx)))
-                        events.add("$title ($time)")
+                        val begin = c.getLong(beginIdx)
+                        if (c.getInt(allDayIdx) == 1 || begin < now) continue
+                        upcoming += begin to title
+                    }
+                    upcoming.sortedBy { it.first }.take(3).forEach { (begin, title) ->
+                        events.add("$title (${timeFmt.format(Date(begin))})")
                     }
                 }
                 events

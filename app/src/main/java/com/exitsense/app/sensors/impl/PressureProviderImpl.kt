@@ -56,6 +56,7 @@ class PressureProviderImpl @Inject constructor(
         sensorManager.unregisterListener(this)
         recentPressures.clear()
         calibrationCount = 0
+        _pressureData.update { it.copy(isDescending = false) }
     }
 
     override fun calibrateBaseline() {

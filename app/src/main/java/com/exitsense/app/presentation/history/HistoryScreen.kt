@@ -186,6 +186,7 @@ private fun ExitEventCard(
 private fun signalShortName(signal: ExitSignalType) = when (signal) {
     ExitSignalType.WIFI_DISCONNECTED -> "Wi-Fi off"
     ExitSignalType.WIFI_CONNECTED_HOME -> "At home"
+    ExitSignalType.WIFI_UNVERIFIED -> "Wi-Fi?"
     ExitSignalType.MOTION_WALKING -> "Walking"
     ExitSignalType.MOTION_RUNNING -> "Running"
     ExitSignalType.MOTION_DRIVING -> "Driving"

@@ -3,6 +3,7 @@ package com.exitsense.app.domain.model
 enum class ExitSignalType(val displayName: String) {
     WIFI_DISCONNECTED("Wi-Fi Disconnected"),
     WIFI_CONNECTED_HOME("At Home Wi-Fi"),
+    WIFI_UNVERIFIED("On Wi-Fi (network unknown)"),
     MOTION_WALKING("Walking"),
     MOTION_RUNNING("Running"),
     MOTION_DRIVING("Driving"),

@@ -9,15 +9,17 @@
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    <!-- Required on API 33+ to read the connected Wi-Fi SSID without location permission -->
+    <!-- Required on API 33+ for Wi-Fi scans; reading the connected SSID still needs location -->
     <uses-permission
         android:name="android.permission.NEARBY_WIFI_DEVICES"
         tools:targetApi="33" />
-    <!-- Optional: used only for weather forecasts when the user grants location -->
+    <!-- Needed to read the connected Wi-Fi SSID / network ID (Android 10+) -->
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <!-- Lets the monitoring service use the "while in use" location grant in the background -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
@@ -47,7 +49,7 @@
         <service
             android:name=".service.ExitMonitoringService"
             android:exported="false"
-            android:foregroundServiceType="specialUse">
+            android:foregroundServiceType="location|specialUse">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Monitors device sensors to detect when user is leaving home and trigger checklist reminders" />

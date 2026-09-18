@@ -90,6 +90,20 @@ class HomeViewModel @Inject constructor(
         observeSensorStates()
         observeRecentEvents()
         runInitialDetection()
+        restoreMonitoringService()
+    }
+
+    /**
+     * The saved "monitoring enabled" flag outlives the service (app updates, the system
+     * stopping it), so bring the service back whenever the app is opened.
+     */
+    private fun restoreMonitoringService() {
+        viewModelScope.launch {
+            val prefs = preferencesDataStore.userPreferences.first()
+            if (prefs.isSetupComplete && prefs.isMonitoringEnabled) {
+                ExitMonitoringService.start(context)
+            }
+        }
     }
 
     override fun onCleared() {
@@ -221,16 +235,12 @@ class HomeViewModel @Inject constructor(
     }
 
     fun startMonitoringService() {
-        val intent = Intent(context, ExitMonitoringService::class.java)
-            .setAction(ExitMonitoringService.ACTION_START)
-        context.startForegroundService(intent)
+        ExitMonitoringService.start(context)
         viewModelScope.launch { preferencesDataStore.setMonitoringEnabled(true) }
     }
 
     fun stopMonitoringService() {
-        val intent = Intent(context, ExitMonitoringService::class.java)
-            .setAction(ExitMonitoringService.ACTION_STOP)
-        context.startService(intent)
+        context.stopService(Intent(context, ExitMonitoringService::class.java))
         viewModelScope.launch { preferencesDataStore.setMonitoringEnabled(false) }
     }
 }
