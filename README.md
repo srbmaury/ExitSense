@@ -1,6 +1,6 @@
 # ExitSense
 
-**A smart exit reminder for Android — no GPS, no cloud, no account.**
+**A smart exit reminder for Android — local-first, no cloud account, and no continuous GPS tracking.**
 
 ExitSense watches your sensors and figures out when you're walking out the door. When it's confident enough, it sends you a notification with your personal checklist so you never forget your keys, badge, or laptop again.
 
@@ -33,14 +33,16 @@ The app scores seven independent signals every time something meaningful changes
 
 ---
 
-## Wi-Fi detection without location permission
+## Wi-Fi detection and permissions
 
-Android 9+ hides the Wi-Fi name (SSID) unless you grant Location permission. ExitSense handles this in two ways:
+ExitSense uses the home Wi-Fi identity as a strong departure signal, but modern Android versions redact SSID and network identity unless the app has the permissions required by the platform.
 
-- **With Location permission** — matches by SSID name (what you type in setup).
-- **Without Location permission** — matches by Android's internal network ID, which is readable without location permission via `NetworkCallback`. You still get accurate home detection.
+- On Android 12+, Wi-Fi identity access requests both coarse and fine location; requesting fine location alone is not sufficient.
+- On newer Android versions, `NEARBY_WIFI_DEVICES` is also requested where applicable.
+- Background monitoring uses a location-type foreground service when the system permits it so Wi-Fi identity can remain available while monitoring is active.
+- If the phone is connected to Wi-Fi but Android does not expose enough identity information to verify the network, ExitSense treats the device as still at home rather than combining unrelated sensor signals into a false exit.
 
-Either track works. You can switch between them in Settings.
+The app does **not** use continuous GPS tracking for exit detection. Location access is also used by the optional weather integration when enabled.
 
 ---
 
@@ -66,7 +68,7 @@ A profile is a named checklist tied to a schedule. You can have as many as you w
 - **Items:** anything to remember (Laptop, Keys, Wallet, Badge…)
 - **Active toggle:** enable or disable a profile without deleting it
 
-Notification cooldown is **24 hours per profile** — Office and Gym each get their own countdown.
+Each profile can notify **once per active schedule window**. For overnight windows (for example 22:00–02:00), the after-midnight portion belongs to the previous day's schedule. This replaces the old 24-hour cooldown, which could suppress the next day's reminder when you left slightly earlier.
 
 ---
 
@@ -259,27 +261,19 @@ Five tables, all local, no sync.
 
 ---
 
-## Tests
+## Tests and CI
 
 ```bash
-./gradlew test
+# Unit tests
+./gradlew testDebugUnitTest
 
-# Single suite
-./gradlew test --tests "com.exitsense.app.rules.ExitDetectorTest"
+# Instrumented tests (requires an Android device/emulator)
+./gradlew connectedDebugAndroidTest
 ```
 
-| Suite | Tests | Covers |
-|---|---:|---|
-| `ExitDetectorTest` | 11 | Scoring, threshold, at-home suppression, barometer, networkId paths, multi-set |
-| `TimeRuleEvaluatorTest` | 9 | Schedule matching, custom days, overnight windows |
-| `LearningRepositoryTest` | 5 | Priority formula (floor, cap, midpoint, null-skip, multi-item) |
-| `RecordUserResponseUseCaseTest` | 3 | Normal chain, missing event short-circuit, empty responses |
-| `GetItemRecommendationsUseCaseTest` | 3 | Sort by effective priority, disabled-item filter, learned multiplier |
-| `ReminderModelTest` | 3 | effectivePriority, notifiableItems filter, notifiableItems sort |
-| `SaveProfileUseCaseTest` | 4 | Create vs update, validation |
-| `HomeViewModelTest` | 3 | StateFlow emission, sensor changes, manual detection |
-| `MapperTest` | 7 | Entity ↔ Domain round-trips, malformed data |
-| **Total** | **48** | All passing |
+The current suite contains **98 unit tests and 5 instrumented tests**. Coverage includes exit scoring, overnight schedule handling, Wi-Fi/permission edge cases, reminder dispatch, repositories and use-cases, ViewModels, mappers, foreground-service behavior, and Compose components.
+
+GitHub Actions runs unit tests and builds both debug and release variants on pushes and pull requests.
 
 ---
 
@@ -312,8 +306,8 @@ buildTypes {
 | Build fails with `jlink non-zero exit value` | Set `JAVA_HOME` to Android Studio's JDK 21 (see above) |
 | `SDK location not found` | Create `local.properties` with `sdk.dir=/path/to/Android/sdk` |
 | `Installed platform not found android-36` | SDK Manager → install **Android 16 (API 36)** |
-| SSID shows `<unknown ssid>` | Normal on Android 9+ without Location. Grant it or use networkId matching — both work |
+| SSID shows `<unknown ssid>` | Grant the requested location permission and make sure system Location services are enabled; modern Android may redact both SSID and network identity otherwise |
 | No notification even though exit is detected | The current time must fall inside an active profile's scheduled window |
 | Notifications stopped after a few hours | Grant Battery Optimization exemption: Settings → Apps → ExitSense → Battery → Unrestricted |
 | Barometer or light row missing from Home | Hardware not present on this device — those signals are silently skipped |
-| Two notifications for the same exit | Each profile has its own 24 h cooldown — check if multiple profiles matched |
+| Two notifications for the same exit | Service and worker detection now share one reminder dispatcher and should not duplicate; capture logs if this still occurs |
